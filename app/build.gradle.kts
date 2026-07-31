@@ -1,0 +1,63 @@
+plugins {
+    id("com.android.application")
+    id("org.jetbrains.kotlin.android")
+}
+
+android {
+    namespace = "dev.chinmay.llamacppgemma"
+    compileSdk = 35
+    ndkVersion = "27.2.12479018"
+
+    defaultConfig {
+        applicationId = "dev.chinmay.llamacppgemma"
+        minSdk = 29
+        targetSdk = 35
+        versionCode = 1
+        versionName = "0.1.0"
+
+        ndk {
+            abiFilters += listOf("arm64-v8a")
+        }
+
+        externalNativeBuild {
+            cmake {
+                cppFlags += listOf("-std=c++17", "-fexceptions", "-frtti")
+                arguments += listOf(
+                    "-DANDROID_STL=c++_shared",
+                    "-DLLAMA_CPP_DIR=${rootDir}/third_party/llama.cpp"
+
+                    // Uncomment one backend after vendoring llama.cpp:
+                    // "-DGGML_VULKAN=ON",
+                    // "-DGGML_OPENCL=ON",
+                )
+            }
+        }
+    }
+
+    externalNativeBuild {
+        cmake {
+            path = file("src/main/cpp/CMakeLists.txt")
+            version = "3.22.1"
+        }
+    }
+
+    buildFeatures {
+        compose = true
+    }
+}
+
+kotlin {
+    jvmToolchain(17)
+}
+
+dependencies {
+    implementation(platform("androidx.compose:compose-bom:2024.12.01"))
+    implementation("androidx.activity:activity-compose:1.9.3")
+    implementation("androidx.compose.material3:material3")
+    implementation("androidx.compose.ui:ui")
+    implementation("androidx.compose.ui:ui-tooling-preview")
+    implementation("androidx.lifecycle:lifecycle-runtime-compose:2.8.7")
+    implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.8.7")
+
+    debugImplementation("androidx.compose.ui:ui-tooling")
+}
