@@ -1,0 +1,185 @@
+package dev.chinmay.llamacppgemma
+
+import android.app.Application
+import android.net.Uri
+import android.provider.OpenableColumns
+import androidx.lifecycle.AndroidViewModel
+import androidx.lifecycle.viewModelScope
+import java.io.File
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+
+class ChatViewModel(application: Application) : AndroidViewModel(application) {
+    private val _state = MutableStateFlow(ChatUiState())
+    val state: StateFlow<ChatUiState> = _state
+
+    fun setInput(value: String) {
+        _state.update { it.copy(input = value) }
+    }
+
+    fun setBackend(backend: LlamaBackend) {
+        _state.update {
+            it.copy(
+                settings = it.settings.copy(
+                    backend = backend,
+                    gpuLayers = backend.defaultGpuLayers,
+                ),
+            )
+        }
+    }
+
+    fun setGpuLayers(value: Int) {
+        _state.update { it.copy(settings = it.settings.copy(gpuLayers = value.coerceIn(0, 999))) }
+    }
+
+    fun selectModel(uri: Uri) {
+        viewModelScope.launch {
+            _state.update { it.copy(isBusy = true, error = null) }
+            runCatching {
+                withContext(Dispatchers.IO) {
+                    copyModelToPrivateStorage(uri)
+                }
+            }.onSuccess { model ->
+                _state.update {
+                    it.copy(
+                        modelUri = uri,
+                        modelPath = model.absolutePath,
+                        modelName = model.name,
+                        loadedBackend = null,
+                        isBusy = false,
+                    )
+                }
+            }.onFailure { e ->
+                _state.update { it.copy(isBusy = false, error = e.message ?: "Unable to copy model") }
+            }
+        }
+    }
+
+    fun loadModel() {
+        val current = _state.value
+        val modelPath = current.modelPath ?: run {
+            _state.update { it.copy(error = "Select a GGUF model first") }
+            return
+        }
+
+        viewModelScope.launch {
+            _state.update { it.copy(isBusy = true, error = null) }
+            runCatching {
+                withContext(Dispatchers.IO) {
+                    LlamaBridge.loadModel(
+                        modelPath = modelPath,
+                        backend = current.settings.backend.nativeName,
+                        gpuLayers = current.settings.gpuLayers,
+                        contextSize = current.settings.contextSize,
+                        threads = current.settings.threads,
+                    )
+                }
+            }.onSuccess { backend ->
+                _state.update {
+                    it.copy(
+                        loadedBackend = backend,
+                        isBusy = false,
+                        messages = it.messages + ChatMessage(
+                            ChatMessage.Role.System,
+                            "Loaded ${it.modelName} on $backend",
+                        ),
+                    )
+                }
+            }.onFailure { e ->
+                _state.update { it.copy(isBusy = false, error = e.message ?: "Unable to load model") }
+            }
+        }
+    }
+
+    fun send() {
+        val current = _state.value
+        val userText = current.input.trim()
+        if (userText.isEmpty() || current.isBusy) return
+        if (current.loadedBackend == null) {
+            _state.update { it.copy(error = "Load the model before chatting") }
+            return
+        }
+
+        val prompt = buildPrompt(current.messages, userText)
+        _state.update {
+            it.copy(
+                input = "",
+                isBusy = true,
+                error = null,
+                messages = it.messages + ChatMessage(ChatMessage.Role.User, userText),
+            )
+        }
+
+        viewModelScope.launch {
+            runCatching {
+                withContext(Dispatchers.Default) {
+                    LlamaBridge.generate(
+                        prompt = prompt,
+                        maxTokens = current.settings.maxTokens,
+                        temperature = current.settings.temperature,
+                    )
+                }
+            }.onSuccess { answer ->
+                _state.update {
+                    it.copy(
+                        isBusy = false,
+                        messages = it.messages + ChatMessage(ChatMessage.Role.Assistant, answer.trim()),
+                    )
+                }
+            }.onFailure { e ->
+                _state.update { it.copy(isBusy = false, error = e.message ?: "Generation failed") }
+            }
+        }
+    }
+
+    override fun onCleared() {
+        runCatching { LlamaBridge.unload() }
+        super.onCleared()
+    }
+
+    private fun copyModelToPrivateStorage(uri: Uri): File {
+        val context = getApplication<Application>()
+        val modelsDir = File(context.filesDir, "models").apply { mkdirs() }
+        val displayName = queryDisplayName(uri).ifBlank { "model.gguf" }
+        val outFile = File(modelsDir, displayName.replace(Regex("[^A-Za-z0-9._-]"), "_"))
+
+        context.contentResolver.openInputStream(uri).use { input ->
+            requireNotNull(input) { "Unable to open selected model" }
+            outFile.outputStream().use { output -> input.copyTo(output) }
+        }
+        return outFile
+    }
+
+    private fun queryDisplayName(uri: Uri): String {
+        val context = getApplication<Application>()
+        return context.contentResolver.query(uri, null, null, null, null)?.use { cursor ->
+            val index = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+            if (index >= 0 && cursor.moveToFirst()) cursor.getString(index) else ""
+        }.orEmpty()
+    }
+
+    private fun buildPrompt(history: List<ChatMessage>, userText: String): String {
+        val turns = history
+            .filter { it.role != ChatMessage.Role.System }
+            .takeLast(8)
+            .joinToString("\n") { message ->
+                when (message.role) {
+                    ChatMessage.Role.User -> "User: ${message.text}"
+                    ChatMessage.Role.Assistant -> "Assistant: ${message.text}"
+                    ChatMessage.Role.System -> ""
+                }
+            }
+
+        return """
+            <start_of_turn>user
+            $turns
+            User: $userText
+            <end_of_turn>
+            <start_of_turn>model
+        """.trimIndent()
+    }
+}
