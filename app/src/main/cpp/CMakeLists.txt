@@ -6,6 +6,7 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 set(LLAMA_CPP_DIR "" CACHE PATH "Path to llama.cpp checkout")
+set(VULKAN_HEADERS_INCLUDE_DIR "" CACHE PATH "Path to Vulkan-Headers include directory")
 
 if(NOT EXISTS "${LLAMA_CPP_DIR}/CMakeLists.txt")
     message(FATAL_ERROR "llama.cpp not found. Clone it to third_party/llama.cpp or pass -DLLAMA_CPP_DIR=/path/to/llama.cpp")
@@ -18,6 +19,10 @@ set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
 
 add_subdirectory("${LLAMA_CPP_DIR}" "${CMAKE_BINARY_DIR}/llama.cpp")
 
+if(GGML_VULKAN AND VULKAN_HEADERS_INCLUDE_DIR AND TARGET ggml-vulkan)
+    target_include_directories(ggml-vulkan PRIVATE "${VULKAN_HEADERS_INCLUDE_DIR}")
+endif()
+
 add_library(llamacpp_jni SHARED llama_jni.cpp)
 
 if(GGML_VULKAN)
@@ -28,6 +33,10 @@ target_include_directories(llamacpp_jni PRIVATE
     "${LLAMA_CPP_DIR}/include"
     "${LLAMA_CPP_DIR}/ggml/include"
 )
+
+if(GGML_VULKAN AND VULKAN_HEADERS_INCLUDE_DIR)
+    target_include_directories(llamacpp_jni PRIVATE "${VULKAN_HEADERS_INCLUDE_DIR}")
+endif()
 
 target_link_libraries(llamacpp_jni
     llama
