@@ -54,6 +54,14 @@ android {
     buildFeatures {
         compose = true
     }
+
+    buildTypes {
+        release {
+            signingConfig = signingConfigs.getByName("debug")
+            isDebuggable = false
+            isMinifyEnabled = false
+        }
+    }
 }
 
 kotlin {
