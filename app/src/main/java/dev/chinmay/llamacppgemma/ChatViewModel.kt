@@ -56,6 +56,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                         modelPath = model.absolutePath,
                         modelName = model.name,
                         loadedBackend = null,
+                        nativeDiagnostics = "",
                         benchmark = null,
                         isBusy = false,
                     )
@@ -89,6 +90,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 _state.update {
                     it.copy(
                         loadedBackend = backend,
+                        nativeDiagnostics = LlamaBridge.diagnostics(),
                         benchmark = null,
                         isBusy = false,
                         messages = it.messages + ChatMessage(
@@ -98,7 +100,13 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                     )
                 }
             }.onFailure { e ->
-                _state.update { it.copy(isBusy = false, error = e.message ?: "Unable to load model") }
+                _state.update {
+                    it.copy(
+                        isBusy = false,
+                        nativeDiagnostics = runCatching { LlamaBridge.diagnostics() }.getOrDefault(""),
+                        error = e.message ?: "Unable to load model",
+                    )
+                }
             }
         }
     }
@@ -127,14 +135,21 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                     it.copy(
                         isBusy = false,
                         benchmark = result,
+                        nativeDiagnostics = LlamaBridge.diagnostics(),
                         messages = it.messages + ChatMessage(
                             ChatMessage.Role.System,
-                            "Benchmark: ${"%.2f".format(result.tokensPerSecond)} tok/s (${result.generatedTokens} tokens in ${result.elapsedMs} ms)",
+                            "Benchmark: ${"%.2f".format(result.tokensPerSecond)} tok/s (${result.buildType}, ${result.generatedTokens} tokens in ${result.elapsedMs} ms)",
                         ),
                     )
                 }
             }.onFailure { e ->
-                _state.update { it.copy(isBusy = false, error = e.message ?: "Benchmark failed") }
+                _state.update {
+                    it.copy(
+                        isBusy = false,
+                        nativeDiagnostics = runCatching { LlamaBridge.diagnostics() }.getOrDefault(""),
+                        error = e.message ?: "Benchmark failed",
+                    )
+                }
             }
         }
     }
@@ -237,6 +252,10 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
 
         return BenchmarkResult(
             backend = values["backend"].orEmpty().ifBlank { fallbackBackend },
+            buildType = values["build_type"].orEmpty().ifBlank { "Unknown" },
+            gpuLayersRequested = values["gpu_layers_requested"]?.toIntOrNull() ?: 0,
+            contextSize = values["context_size"]?.toIntOrNull() ?: 0,
+            threads = values["threads"]?.toIntOrNull() ?: 0,
             promptTokens = values["prompt_tokens"]?.toIntOrNull() ?: 0,
             generatedTokens = values["generated_tokens"]?.toIntOrNull() ?: 0,
             elapsedMs = values["elapsed_ms"]?.toLongOrNull() ?: 0L,
