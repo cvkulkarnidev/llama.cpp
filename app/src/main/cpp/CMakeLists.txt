@@ -30,6 +30,16 @@ endif()
 
 add_library(llamacpp_jni SHARED llama_jni.cpp)
 
+set(LLAMACPP_GEMMA_NATIVE_BUILD_TYPE "${CMAKE_BUILD_TYPE}")
+if(NOT LLAMACPP_GEMMA_NATIVE_BUILD_TYPE)
+    set(LLAMACPP_GEMMA_NATIVE_BUILD_TYPE "Unknown")
+endif()
+target_compile_definitions(
+    llamacpp_jni
+    PRIVATE
+    "LLAMACPP_GEMMA_BUILD_TYPE=\"${LLAMACPP_GEMMA_NATIVE_BUILD_TYPE}\""
+)
+
 if(GGML_VULKAN)
     target_compile_definitions(llamacpp_jni PRIVATE LLAMACPP_GEMMA_VULKAN_ENABLED=1)
 endif()
