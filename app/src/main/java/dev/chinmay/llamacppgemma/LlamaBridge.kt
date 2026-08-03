@@ -37,7 +37,10 @@ fun interface GenerationCallback {
         outputUtf8: ByteArray,
         generatedTokens: Int,
         promptTokens: Int,
+        cachedPromptTokens: Int,
         promptEvalMs: Long,
         generationMs: Long,
+        timeToFirstTokenMs: Long,
+        totalMs: Long,
     )
 }

@@ -33,6 +33,8 @@ android {
                     "-DGGML_OPENMP=OFF",
                     "-DGGML_OPENCL=OFF",
                     "-DGGML_LLAMAFILE=OFF",
+                    "-DGGML_CPU_ARM_ARCH=armv8.7-a",
+                    "-DCMAKE_INTERPROCEDURAL_OPTIMIZATION=ON",
                 )
                 System.getenv("SPIRV_HEADERS_DIR")?.takeIf { it.isNotBlank() }?.let {
                     cmakeArguments += "-DSPIRV-Headers_DIR=$it"
@@ -74,6 +76,9 @@ android {
             signingConfig = signingConfigs.getByName("developmentRelease")
             isDebuggable = false
             isMinifyEnabled = false
+            ndk {
+                debugSymbolLevel = "none"
+            }
         }
     }
 }

@@ -217,7 +217,9 @@ private fun ModelPanel(
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                         Text(
-                            "prompt=${result.promptTokens} tokens/${result.promptEvalMs} ms; gpuLayers=${result.gpuLayersRequested}, ctx=${result.contextSize}, threads=${result.threads}",
+                            "prompt=${result.promptTokens} tokens/${result.promptEvalMs} ms; " +
+                                "cached=${result.cachedPromptTokens}; gpuLayers=${result.gpuLayersRequested}, " +
+                                "ctx=${result.contextSize}, threads=${result.threads}",
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
@@ -320,18 +322,20 @@ private fun MessageBubble(message: ChatMessage) {
                     text = if (message.text.isEmpty() && message.metrics?.isComplete == false) {
                         "…"
                     } else {
-                        message.text
+                        message.text.trim()
                     },
                     style = MaterialTheme.typography.bodyMedium,
                 )
                 message.metrics?.let { metrics ->
                     val timing = if (metrics.isComplete) {
                         "${metrics.generatedTokens} tokens • ${"%.2f".format(metrics.tokensPerSecond)} tok/s • " +
-                            "prompt ${metrics.promptTokens} tokens/${metrics.promptEvalMs} ms • " +
+                            "TTFT ${metrics.timeToFirstTokenMs} ms • " +
+                            "prompt ${metrics.promptTokens} (${metrics.cachedPromptTokens} cached)/${metrics.promptEvalMs} ms • " +
                             "generation ${metrics.generationMs} ms • total ${metrics.totalMs} ms"
                     } else {
-                        "${metrics.generatedTokens} tokens • ${metrics.generationMs} ms generating • " +
-                            "prompt ${metrics.promptTokens} tokens/${metrics.promptEvalMs} ms"
+                        "${metrics.generatedTokens} tokens • ${metrics.generationMs} ms • " +
+                            "TTFT ${metrics.timeToFirstTokenMs} ms • " +
+                            "prompt ${metrics.promptTokens} (${metrics.cachedPromptTokens} cached)"
                     }
                     Text(
                         text = timing,

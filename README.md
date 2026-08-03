@@ -126,8 +126,9 @@ The APK is written to `app/build/outputs/apk/release/app-release.apk`.
 7. Run `Benchmark`, then repeat in CPU mode for comparison.
 
 Chat responses stream token-by-token and retain per-response prompt-token count, generated-token
-count, prompt-evaluation time, generation time, total time, and generation tokens/sec. The benchmark
-also reports prompt-evaluation time separately; displayed tokens/sec uses generation time only.
+count, reused prompt-token count, time to first token (TTFT), prompt-evaluation time, generation time,
+end-to-end request time, and generation tokens/sec. The benchmark also reports prompt-evaluation time
+separately; displayed tokens/sec uses generation time only.
 
 ## Implementation notes and limits
 
@@ -136,6 +137,10 @@ also reports prompt-evaluation time separately; displayed tokens/sec uses genera
 - Chat messages are formatted with the GGUF's embedded chat template.
 - Context overflow is checked and requested output is capped to available context space.
 - Generation streams into the active assistant message; one request runs at a time.
+- The native context stays allocated between requests and reuses the exact common KV-cache prefix.
+  Streaming callbacks are paced to roughly display refresh cadence to avoid JNI and UI work per token.
+- Release builds target Armv8.7-A, use link-time optimization, warm Vulkan/CPU graphs at model load,
+  keep Flash Attention and operation/KV offload enabled, and skip an unused final-token decode.
 - Hard native driver crashes or process-level out-of-memory kills cannot be converted into a Kotlin
   error dialog.
 - NPU via LiteRT-LM would require a second inference engine and a non-GGUF model deployment path;

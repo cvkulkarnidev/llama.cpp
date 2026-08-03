@@ -4,10 +4,12 @@
 #include <algorithm>
 #include <cctype>
 #include <chrono>
+#include <cstddef>
 #include <functional>
 #include <mutex>
 #include <stdexcept>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "llama.h"
@@ -31,6 +33,7 @@ struct Engine {
     int requested_gpu_layers = 0;
     int requested_context_size = 0;
     int requested_threads = 0;
+    std::vector<llama_token> cached_tokens;
 };
 
 Engine g_engine;
@@ -156,6 +159,7 @@ ggml_backend_dev_t find_vulkan_device() {
 }
 
 void unload_locked() {
+    g_engine.cached_tokens.clear();
     if (g_engine.sampler) {
         llama_sampler_free(g_engine.sampler);
         g_engine.sampler = nullptr;
@@ -205,14 +209,16 @@ std::vector<llama_token> tokenize(const llama_vocab * vocab, const std::string &
 }
 
 std::string token_to_piece(const llama_vocab * vocab, llama_token token) {
-    std::vector<char> buffer(64);
-    int size = llama_token_to_piece(vocab, token, buffer.data(), static_cast<int32_t>(buffer.size()), 0, true);
+    char stack_buffer[256];
+    int size = llama_token_to_piece(vocab, token, stack_buffer, sizeof(stack_buffer), 0, true);
     if (size < 0) {
-        buffer.resize(static_cast<size_t>(-size));
+        std::vector<char> buffer(static_cast<size_t>(-size));
         size = llama_token_to_piece(vocab, token, buffer.data(), static_cast<int32_t>(buffer.size()), 0, true);
+        if (size <= 0) return "";
+        return std::string(buffer.data(), static_cast<size_t>(size));
     }
     if (size <= 0) return "";
-    return std::string(buffer.data(), static_cast<size_t>(size));
+    return std::string(stack_buffer, static_cast<size_t>(size));
 }
 
 std::string format_gemma4_chat_prompt(
@@ -286,13 +292,7 @@ std::string format_chat_prompt(
     return std::string(formatted.data(), static_cast<size_t>(written));
 }
 
-void reset_context_and_sampler(float temperature) {
-    llama_free(g_engine.ctx);
-    g_engine.ctx = llama_init_from_model(g_engine.model, g_engine.ctx_params);
-    if (!g_engine.ctx) {
-        throw std::runtime_error("Failed to reset llama context");
-    }
-
+void reset_sampler(float temperature) {
     if (g_engine.sampler) {
         llama_sampler_free(g_engine.sampler);
     }
@@ -308,9 +308,12 @@ void reset_context_and_sampler(float temperature) {
 struct InferenceResult {
     std::string output;
     int prompt_tokens = 0;
+    int cached_prompt_tokens = 0;
     int generated_tokens = 0;
     long long prompt_eval_ms = 0;
     long long generation_ms = 0;
+    long long time_to_first_token_ms = 0;
+    long long total_ms = 0;
 };
 
 using StreamCallback = std::function<void(const InferenceResult &)>;
@@ -320,9 +323,10 @@ InferenceResult run_inference(
     int max_tokens,
     float temperature,
     bool capture_output,
-    const StreamCallback & on_token = {}
+    const StreamCallback & on_token = {},
+    std::chrono::steady_clock::time_point request_started = std::chrono::steady_clock::now()
 ) {
-    reset_context_and_sampler(std::max(0.0f, temperature));
+    reset_sampler(std::max(0.0f, temperature));
 
     const llama_vocab * vocab = llama_model_get_vocab(g_engine.model);
     std::vector<llama_token> tokens = tokenize(vocab, prompt);
@@ -346,20 +350,78 @@ InferenceResult run_inference(
 
     InferenceResult result;
     result.prompt_tokens = static_cast<int>(tokens.size());
-    const auto prompt_started = std::chrono::steady_clock::now();
-    llama_batch batch = llama_batch_get_one(tokens.data(), static_cast<int32_t>(tokens.size()));
-    if (llama_decode(g_engine.ctx, batch) != 0) {
-        throw std::runtime_error("Prompt decode failed");
+
+    size_t common_prefix = 0;
+    const size_t comparable = std::min(tokens.size(), g_engine.cached_tokens.size());
+    while (common_prefix < comparable && tokens[common_prefix] == g_engine.cached_tokens[common_prefix]) {
+        ++common_prefix;
     }
+    // At least one token must be evaluated so the context exposes logits for sampling.
+    if (common_prefix == tokens.size() && common_prefix > 0) {
+        --common_prefix;
+    }
+
+    llama_memory_t memory = llama_get_memory(g_engine.ctx);
+    if (common_prefix == 0) {
+        llama_memory_clear(memory, false);
+        g_engine.cached_tokens.clear();
+    } else {
+        if (!llama_memory_seq_rm(memory, 0, static_cast<llama_pos>(common_prefix), -1)) {
+            llama_memory_clear(memory, false);
+            common_prefix = 0;
+        }
+        g_engine.cached_tokens.resize(common_prefix);
+    }
+    result.cached_prompt_tokens = static_cast<int>(common_prefix);
+
+    const auto prompt_started = std::chrono::steady_clock::now();
+    size_t processed = common_prefix;
+    const size_t prompt_batch_size = static_cast<size_t>(llama_n_batch(g_engine.ctx));
+    while (processed < tokens.size()) {
+        const size_t chunk_size = std::min(prompt_batch_size, tokens.size() - processed);
+        llama_batch batch = llama_batch_get_one(
+            tokens.data() + processed,
+            static_cast<int32_t>(chunk_size)
+        );
+        if (llama_decode(g_engine.ctx, batch) != 0) {
+            throw std::runtime_error("Prompt decode failed");
+        }
+        processed += chunk_size;
+    }
+    g_engine.cached_tokens.insert(
+        g_engine.cached_tokens.end(),
+        tokens.begin() + static_cast<std::ptrdiff_t>(common_prefix),
+        tokens.end()
+    );
     const auto prompt_finished = std::chrono::steady_clock::now();
     result.prompt_eval_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
         prompt_finished - prompt_started
     ).count();
 
     const auto generation_started = prompt_finished;
+    auto last_streamed_at = generation_started;
+    int last_streamed_tokens = 0;
+    constexpr auto stream_interval = std::chrono::milliseconds(32);
+
+    const auto stream = [&](bool force) {
+        if (!on_token || result.generated_tokens == last_streamed_tokens) return;
+        const auto now = std::chrono::steady_clock::now();
+        if (!force && now - last_streamed_at < stream_interval) return;
+        result.generation_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+            now - generation_started
+        ).count();
+        result.total_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+            now - request_started
+        ).count();
+        on_token(result);
+        last_streamed_at = now;
+        last_streamed_tokens = result.generated_tokens;
+    };
+
     for (int i = 0; i < limit; ++i) {
         llama_token next = llama_sampler_sample(g_engine.sampler, g_engine.ctx, -1);
         if (llama_vocab_is_eog(vocab, next)) {
+            stream(true);
             break;
         }
 
@@ -367,25 +429,68 @@ InferenceResult run_inference(
             result.output += token_to_piece(vocab, next);
         }
         result.generated_tokens += 1;
+        if (result.generated_tokens == 1) {
+            result.time_to_first_token_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now() - request_started
+            ).count();
+            stream(true);
+        }
+
+        // The final predicted token does not need a decode because no subsequent sample uses it.
+        if (i + 1 == limit) {
+            stream(true);
+            break;
+        }
 
         llama_batch next_batch = llama_batch_get_one(&next, 1);
         if (llama_decode(g_engine.ctx, next_batch) != 0) {
             throw std::runtime_error("Token decode failed");
         }
-
-        if (on_token) {
-            result.generation_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-                std::chrono::steady_clock::now() - generation_started
-            ).count();
-            on_token(result);
-        }
+        g_engine.cached_tokens.push_back(next);
+        stream(false);
     }
     const auto generation_finished = std::chrono::steady_clock::now();
 
     result.generation_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
         generation_finished - generation_started
     ).count();
+    result.total_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+        generation_finished - request_started
+    ).count();
+    stream(true);
     return result;
+}
+
+long long warmup_context() {
+    const auto started = std::chrono::steady_clock::now();
+    const llama_vocab * vocab = llama_model_get_vocab(g_engine.model);
+    std::vector<llama_token> warmup_tokens;
+    const llama_token bos = llama_vocab_bos(vocab);
+    const llama_token eos = llama_vocab_eos(vocab);
+    if (bos != LLAMA_TOKEN_NULL) warmup_tokens.push_back(bos);
+    if (eos != LLAMA_TOKEN_NULL) warmup_tokens.push_back(eos);
+    if (warmup_tokens.empty()) warmup_tokens.push_back(0);
+
+    llama_memory_t memory = llama_get_memory(g_engine.ctx);
+    if (llama_model_has_decoder(g_engine.model) && !llama_model_has_encoder(g_engine.model)) {
+        if (llama_decode(
+                g_engine.ctx,
+                llama_batch_get_one(warmup_tokens.data(), static_cast<int32_t>(warmup_tokens.size()))
+            ) != 0) {
+            throw std::runtime_error("Model warmup prompt decode failed");
+        }
+        llama_memory_clear(memory, false);
+        if (llama_decode(g_engine.ctx, llama_batch_get_one(warmup_tokens.data(), 1)) != 0) {
+            throw std::runtime_error("Model warmup token decode failed");
+        }
+    }
+    llama_synchronize(g_engine.ctx);
+    llama_memory_clear(memory, false);
+    g_engine.cached_tokens.clear();
+
+    return std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - started
+    ).count();
 }
 
 } // namespace
@@ -403,6 +508,7 @@ Java_dev_chinmay_llamacppgemma_LlamaBridge_loadModel(
     std::lock_guard<std::mutex> lock(g_engine.mutex);
 
     try {
+        const auto load_started = std::chrono::steady_clock::now();
         unload_locked();
         clear_diagnostics();
 
@@ -464,9 +570,18 @@ Java_dev_chinmay_llamacppgemma_LlamaBridge_loadModel(
 
         g_engine.ctx_params = llama_context_default_params();
         g_engine.ctx_params.n_ctx = static_cast<uint32_t>(g_engine.requested_context_size);
-        g_engine.ctx_params.n_batch = static_cast<uint32_t>(g_engine.requested_context_size);
+        g_engine.ctx_params.n_batch = static_cast<uint32_t>(std::min(2048, g_engine.requested_context_size));
+        g_engine.ctx_params.n_ubatch = static_cast<uint32_t>(std::min(512, g_engine.requested_context_size));
+        g_engine.ctx_params.n_seq_max = 1;
+        g_engine.ctx_params.n_outputs_max = 1;
         g_engine.ctx_params.n_threads = g_engine.requested_threads;
-        g_engine.ctx_params.n_threads_batch = g_engine.requested_threads;
+        const int available_threads = static_cast<int>(std::max(1u, std::thread::hardware_concurrency()));
+        g_engine.ctx_params.n_threads_batch = std::min(8, std::max(g_engine.requested_threads, available_threads));
+        g_engine.ctx_params.flash_attn_type = LLAMA_FLASH_ATTN_TYPE_AUTO;
+        g_engine.ctx_params.offload_kqv = true;
+        g_engine.ctx_params.op_offload = true;
+        g_engine.ctx_params.no_perf = true;
+        g_engine.ctx_params.swa_full = false;
 
         g_engine.model = llama_model_load_from_file(path.c_str(), model_params);
         if (!g_engine.model) {
@@ -483,8 +598,28 @@ Java_dev_chinmay_llamacppgemma_LlamaBridge_loadModel(
         llama_sampler_chain_add(g_engine.sampler, llama_sampler_init_temp(0.7f));
         llama_sampler_chain_add(g_engine.sampler, llama_sampler_init_dist(LLAMA_DEFAULT_SEED));
 
+        const auto initialized_at = std::chrono::steady_clock::now();
+        const long long warmup_ms = warmup_context();
+        const long long model_init_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+            initialized_at - load_started
+        ).count();
+
         g_engine.loaded_backend = selected_backend;
         append_diagnostic("app: model_loaded_on=" + selected_backend + "\n");
+        append_diagnostic(
+            "app: optimizations=persistent_context,prefix_kv_cache,batched_streaming,last_decode_elision,"
+            "flash_attention_auto,op_offload,kv_offload,armv8.7a,lto\n"
+        );
+        append_diagnostic(
+            "app: actual_context_size=" + std::to_string(llama_n_ctx(g_engine.ctx)) +
+            " batch=" + std::to_string(llama_n_batch(g_engine.ctx)) +
+            " ubatch=" + std::to_string(llama_n_ubatch(g_engine.ctx)) +
+            " threads_batch=" + std::to_string(g_engine.ctx_params.n_threads_batch) + "\n"
+        );
+        append_diagnostic(
+            "app: model_init_ms=" + std::to_string(model_init_ms) +
+            " warmup_ms=" + std::to_string(warmup_ms) + "\n"
+        );
 
         LOGI(
             "Loaded model %s on %s with gpu_layers=%d",
@@ -514,6 +649,7 @@ Java_dev_chinmay_llamacppgemma_LlamaBridge_generate(
     std::lock_guard<std::mutex> lock(g_engine.mutex);
 
     try {
+        const auto request_started = std::chrono::steady_clock::now();
         if (!g_engine.model || !g_engine.ctx) {
             throw std::runtime_error("Model is not loaded");
         }
@@ -527,7 +663,7 @@ Java_dev_chinmay_llamacppgemma_LlamaBridge_generate(
         if (!callback_class) {
             throw std::runtime_error("Unable to inspect streaming callback");
         }
-        jmethodID on_token_method = env->GetMethodID(callback_class, "onToken", "([BIIJJ)V");
+        jmethodID on_token_method = env->GetMethodID(callback_class, "onToken", "([BIIIJJJJ)V");
         env->DeleteLocalRef(callback_class);
         if (!on_token_method) {
             if (env->ExceptionCheck()) env->ExceptionClear();
@@ -554,8 +690,11 @@ Java_dev_chinmay_llamacppgemma_LlamaBridge_generate(
                 output,
                 static_cast<jint>(update.generated_tokens),
                 static_cast<jint>(update.prompt_tokens),
+                static_cast<jint>(update.cached_prompt_tokens),
                 static_cast<jlong>(update.prompt_eval_ms),
-                static_cast<jlong>(update.generation_ms)
+                static_cast<jlong>(update.generation_ms),
+                static_cast<jlong>(update.time_to_first_token_ms),
+                static_cast<jlong>(update.total_ms)
             );
             env->DeleteLocalRef(output);
             if (env->ExceptionCheck()) {
@@ -568,13 +707,17 @@ Java_dev_chinmay_llamacppgemma_LlamaBridge_generate(
             static_cast<int>(max_tokens),
             static_cast<float>(temperature),
             true,
-            stream_callback
+            stream_callback,
+            request_started
         );
         const std::string metrics =
             "prompt_tokens=" + std::to_string(result.prompt_tokens) +
+            ";cached_prompt_tokens=" + std::to_string(result.cached_prompt_tokens) +
             ";generated_tokens=" + std::to_string(result.generated_tokens) +
             ";prompt_eval_ms=" + std::to_string(result.prompt_eval_ms) +
-            ";generation_ms=" + std::to_string(result.generation_ms);
+            ";generation_ms=" + std::to_string(result.generation_ms) +
+            ";time_to_first_token_ms=" + std::to_string(result.time_to_first_token_ms) +
+            ";total_ms=" + std::to_string(result.total_ms);
         return string_to_jstring(env, metrics);
     } catch (const std::exception & e) {
         LOGE("%s", e.what());
@@ -600,6 +743,8 @@ Java_dev_chinmay_llamacppgemma_LlamaBridge_benchmark(
         const std::vector<std::string> roles = {"user"};
         const std::vector<std::string> contents = {jstring_to_string(env, prompt)};
         const std::string formatted_prompt = format_chat_prompt(g_engine.model, roles, contents);
+        g_engine.cached_tokens.clear();
+        llama_memory_clear(llama_get_memory(g_engine.ctx), false);
         const auto inference = run_inference(
             formatted_prompt,
             static_cast<int>(max_tokens),
@@ -614,11 +759,14 @@ Java_dev_chinmay_llamacppgemma_LlamaBridge_benchmark(
             ";context_size=" + std::to_string(g_engine.requested_context_size) +
             ";threads=" + std::to_string(g_engine.requested_threads) +
             ";prompt_tokens=" + std::to_string(inference.prompt_tokens) +
+            ";cached_prompt_tokens=" + std::to_string(inference.cached_prompt_tokens) +
             ";generated_tokens=" + std::to_string(inference.generated_tokens) +
             ";prompt_eval_ms=" + std::to_string(inference.prompt_eval_ms) +
             ";generation_ms=" + std::to_string(inference.generation_ms) +
             ";elapsed_ms=" + std::to_string(total_ms);
 
+        g_engine.cached_tokens.clear();
+        llama_memory_clear(llama_get_memory(g_engine.ctx), false);
         LOGI("Benchmark %s", result.c_str());
         return string_to_jstring(env, result);
     } catch (const std::exception & e) {

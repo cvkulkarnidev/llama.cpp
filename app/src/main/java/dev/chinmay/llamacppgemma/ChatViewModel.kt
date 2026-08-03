@@ -210,9 +210,12 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                         text = "",
                         metrics = GenerationMetrics(
                             promptTokens = 0,
+                            cachedPromptTokens = 0,
                             generatedTokens = 0,
                             promptEvalMs = 0,
                             generationMs = 0,
+                            timeToFirstTokenMs = 0,
+                            requestMs = 0,
                             isComplete = false,
                         ),
                     ),
@@ -227,8 +230,11 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                             outputUtf8,
                             generatedTokens,
                             promptTokens,
+                            cachedPromptTokens,
                             promptEvalMs,
-                            generationMs ->
+                            generationMs,
+                            timeToFirstTokenMs,
+                            totalMs ->
                         val output = String(outputUtf8, Charsets.UTF_8)
                         _state.update { state ->
                             val messages = state.messages.toMutableList()
@@ -238,9 +244,12 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                                     text = output,
                                     metrics = GenerationMetrics(
                                         promptTokens = promptTokens,
+                                        cachedPromptTokens = cachedPromptTokens,
                                         generatedTokens = generatedTokens,
                                         promptEvalMs = promptEvalMs,
                                         generationMs = generationMs,
+                                        timeToFirstTokenMs = timeToFirstTokenMs,
+                                        requestMs = totalMs,
                                         isComplete = false,
                                     ),
                                 )
@@ -262,7 +271,6 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                     val index = messages.lastIndex
                     if (index >= 0 && messages[index].role == ChatMessage.Role.Assistant) {
                         messages[index] = messages[index].copy(
-                            text = messages[index].text.trim(),
                             metrics = metrics,
                         )
                     }
@@ -286,23 +294,32 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     private fun copyModelToPrivateStorage(uri: Uri): File {
         val context = getApplication<Application>()
         val modelsDir = File(context.filesDir, "models").apply { mkdirs() }
-        val displayName = queryDisplayName(uri).ifBlank { "model.gguf" }
+        val metadata = queryModelMetadata(uri)
+        val displayName = metadata.name.ifBlank { "model.gguf" }
         require(displayName.endsWith(".gguf", ignoreCase = true)) { "Select a .gguf model file" }
         val outFile = File(modelsDir, displayName.replace(Regex("[^A-Za-z0-9._-]"), "_"))
+        if (metadata.size != null && outFile.isFile && outFile.length() == metadata.size) {
+            return outFile
+        }
 
         context.contentResolver.openInputStream(uri).use { input ->
             requireNotNull(input) { "Unable to open selected model" }
-            outFile.outputStream().use { output -> input.copyTo(output) }
+            outFile.outputStream().use { output -> input.copyTo(output, MODEL_COPY_BUFFER_BYTES) }
         }
         return outFile
     }
 
-    private fun queryDisplayName(uri: Uri): String {
+    private fun queryModelMetadata(uri: Uri): ModelMetadata {
         val context = getApplication<Application>()
         return context.contentResolver.query(uri, null, null, null, null)?.use { cursor ->
-            val index = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
-            if (index >= 0 && cursor.moveToFirst()) cursor.getString(index) else ""
-        }.orEmpty()
+            if (!cursor.moveToFirst()) return@use ModelMetadata("", null)
+            val nameIndex = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+            val sizeIndex = cursor.getColumnIndex(OpenableColumns.SIZE)
+            ModelMetadata(
+                name = if (nameIndex >= 0) cursor.getString(nameIndex).orEmpty() else "",
+                size = if (sizeIndex >= 0 && !cursor.isNull(sizeIndex)) cursor.getLong(sizeIndex) else null,
+            )
+        } ?: ModelMetadata("", null)
     }
 
     private fun parseBenchmark(raw: String, fallbackBackend: String): BenchmarkResult {
@@ -320,6 +337,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             contextSize = values["context_size"]?.toIntOrNull() ?: 0,
             threads = values["threads"]?.toIntOrNull() ?: 0,
             promptTokens = values["prompt_tokens"]?.toIntOrNull() ?: 0,
+            cachedPromptTokens = values["cached_prompt_tokens"]?.toIntOrNull() ?: 0,
             generatedTokens = values["generated_tokens"]?.toIntOrNull() ?: 0,
             promptEvalMs = values["prompt_eval_ms"]?.toLongOrNull() ?: 0L,
             generationMs = values["generation_ms"]?.toLongOrNull()
@@ -338,15 +356,21 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
 
         return GenerationMetrics(
             promptTokens = values["prompt_tokens"]?.toIntOrNull() ?: 0,
+            cachedPromptTokens = values["cached_prompt_tokens"]?.toIntOrNull() ?: 0,
             generatedTokens = values["generated_tokens"]?.toIntOrNull() ?: 0,
             promptEvalMs = values["prompt_eval_ms"]?.toLongOrNull() ?: 0L,
             generationMs = values["generation_ms"]?.toLongOrNull() ?: 0L,
+            timeToFirstTokenMs = values["time_to_first_token_ms"]?.toLongOrNull() ?: 0L,
+            requestMs = values["total_ms"]?.toLongOrNull() ?: 0L,
             isComplete = true,
         )
     }
 
     private companion object {
+        const val MODEL_COPY_BUFFER_BYTES = 1024 * 1024
         const val BENCHMARK_PROMPT =
             "Give a concise checklist for running a small language model locally on Android."
     }
+
+    private data class ModelMetadata(val name: String, val size: Long?)
 }

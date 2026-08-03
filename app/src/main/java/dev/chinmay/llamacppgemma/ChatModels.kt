@@ -12,13 +12,16 @@ data class ChatMessage(
 
 data class GenerationMetrics(
     val promptTokens: Int,
+    val cachedPromptTokens: Int,
     val generatedTokens: Int,
     val promptEvalMs: Long,
     val generationMs: Long,
+    val timeToFirstTokenMs: Long,
+    val requestMs: Long,
     val isComplete: Boolean,
 ) {
     val totalMs: Long
-        get() = promptEvalMs + generationMs
+        get() = requestMs
 
     val tokensPerSecond: Double
         get() = if (generationMs <= 0L) 0.0 else generatedTokens * 1000.0 / generationMs.toDouble()
@@ -40,6 +43,7 @@ data class BenchmarkResult(
     val contextSize: Int,
     val threads: Int,
     val promptTokens: Int,
+    val cachedPromptTokens: Int,
     val generatedTokens: Int,
     val promptEvalMs: Long,
     val generationMs: Long,
