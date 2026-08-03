@@ -202,7 +202,12 @@ private fun ModelPanel(
                             color = MaterialTheme.colorScheme.primary,
                         )
                         Text(
-                            "${result.generatedTokens} tokens, ${result.elapsedMs} ms, ${result.backend}",
+                            "${result.generatedTokens} tokens, ${result.elapsedMs} ms, ${result.buildType}, ${result.backend}",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        Text(
+                            "gpuLayers=${result.gpuLayersRequested}, ctx=${result.contextSize}, threads=${result.threads}",
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
@@ -256,6 +261,15 @@ private fun ModelPanel(
                     valueRange = 0f..99f,
                     steps = 98,
                 )
+
+                if (state.nativeDiagnostics.isNotBlank()) {
+                    Text("Native diagnostics", style = MaterialTheme.typography.titleSmall)
+                    Text(
+                        state.nativeDiagnostics.trim().takeLast(1600),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
             }
         }
     }
