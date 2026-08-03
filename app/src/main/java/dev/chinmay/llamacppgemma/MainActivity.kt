@@ -18,6 +18,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.DropdownMenuItem
@@ -60,6 +61,8 @@ class MainActivity : ComponentActivity() {
                         onInput = viewModel::setInput,
                         onBackend = viewModel::setBackend,
                         onGpuLayers = viewModel::setGpuLayers,
+                        onBenchmark = viewModel::benchmark,
+                        onDismissError = viewModel::dismissError,
                     ),
                 )
             }
@@ -74,6 +77,8 @@ data class ChatActions(
     val onInput: (String) -> Unit,
     val onBackend: (LlamaBackend) -> Unit,
     val onGpuLayers: (Int) -> Unit,
+    val onBenchmark: () -> Unit,
+    val onDismissError: () -> Unit,
 )
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -81,6 +86,19 @@ data class ChatActions(
 fun ChatScreen(state: ChatUiState, actions: ChatActions) {
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         uri?.let(actions.onModelSelected)
+    }
+
+    state.error?.let { error ->
+        AlertDialog(
+            onDismissRequest = actions.onDismissError,
+            title = { Text("Runtime error") },
+            text = { Text(error) },
+            confirmButton = {
+                TextButton(onClick = actions.onDismissError) {
+                    Text("OK")
+                }
+            },
+        )
     }
 
     Scaffold(
@@ -102,6 +120,7 @@ fun ChatScreen(state: ChatUiState, actions: ChatActions) {
                 onLoad = actions.onLoad,
                 onBackend = actions.onBackend,
                 onGpuLayers = actions.onGpuLayers,
+                onBenchmark = actions.onBenchmark,
             )
 
             LazyColumn(
@@ -113,10 +132,6 @@ fun ChatScreen(state: ChatUiState, actions: ChatActions) {
                 items(state.messages) { message ->
                     MessageBubble(message)
                 }
-            }
-
-            state.error?.let {
-                Text(text = it, color = MaterialTheme.colorScheme.error)
             }
 
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -148,21 +163,23 @@ private fun ModelPanel(
     onLoad: () -> Unit,
     onBackend: (LlamaBackend) -> Unit,
     onGpuLayers: (Int) -> Unit,
+    onBenchmark: () -> Unit,
 ) {
     var expanded by remember { mutableStateOf(false) }
+    var showSettings by remember { mutableStateOf(false) }
 
     Card(shape = RoundedCornerShape(8.dp)) {
         Column(
-            modifier = Modifier.padding(12.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp),
+            modifier = Modifier.padding(10.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Column(modifier = Modifier.weight(1f)) {
-                    Text(state.modelName, style = MaterialTheme.typography.titleMedium)
+                    Text(state.modelName, style = MaterialTheme.typography.titleSmall)
                     Text(
                         state.loadedBackend?.let { "Running on $it" } ?: "Model not loaded",
                         style = MaterialTheme.typography.bodySmall,
@@ -172,37 +189,74 @@ private fun ModelPanel(
                 Button(enabled = !state.isBusy, onClick = onLoad) { Text("Load") }
             }
 
-            ExposedDropdownMenuBox(expanded = expanded, onExpandedChange = { expanded = it }) {
-                OutlinedTextField(
-                    value = state.settings.backend.label,
-                    onValueChange = {},
-                    readOnly = true,
-                    label = { Text("Backend") },
-                    trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded) },
-                    modifier = Modifier
-                        .menuAnchor()
-                        .fillMaxWidth(),
-                )
-                ExposedDropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
-                    LlamaBackend.entries.forEach { backend ->
-                        DropdownMenuItem(
-                            text = { Text(backend.label) },
-                            onClick = {
-                                expanded = false
-                                onBackend(backend)
-                            },
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    state.benchmark?.let { result ->
+                        Text(
+                            "Benchmark: ${"%.2f".format(result.tokensPerSecond)} tok/s",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.primary,
                         )
-                    }
+                        Text(
+                            "${result.generatedTokens} tokens, ${result.elapsedMs} ms, ${result.backend}",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    } ?: Text(
+                        "S24 Exynos: use Vulkan first; CPU is safe fallback.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                TextButton(
+                    enabled = !state.isBusy && state.loadedBackend != null,
+                    onClick = onBenchmark,
+                ) {
+                    Text("Benchmark")
                 }
             }
 
-            Text("GPU layers: ${state.settings.gpuLayers}")
-            Slider(
-                value = state.settings.gpuLayers.toFloat(),
-                onValueChange = { onGpuLayers(it.toInt()) },
-                valueRange = 0f..99f,
-                steps = 98,
-            )
+            TextButton(onClick = { showSettings = !showSettings }) {
+                Text(if (showSettings) "Hide settings" else "Show settings")
+            }
+
+            if (showSettings) {
+                ExposedDropdownMenuBox(expanded = expanded, onExpandedChange = { expanded = it }) {
+                    OutlinedTextField(
+                        value = state.settings.backend.label,
+                        onValueChange = {},
+                        readOnly = true,
+                        label = { Text("Backend") },
+                        trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded) },
+                        modifier = Modifier
+                            .menuAnchor()
+                            .fillMaxWidth(),
+                    )
+                    ExposedDropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+                        LlamaBackend.entries.forEach { backend ->
+                            DropdownMenuItem(
+                                text = { Text(backend.label) },
+                                onClick = {
+                                    expanded = false
+                                    onBackend(backend)
+                                },
+                            )
+                        }
+                    }
+                }
+
+                Text("GPU layers: ${state.settings.gpuLayers}")
+                Slider(
+                    value = state.settings.gpuLayers.toFloat(),
+                    onValueChange = { onGpuLayers(it.toInt()) },
+                    valueRange = 0f..99f,
+                    steps = 98,
+                )
+            }
         }
     }
 }
