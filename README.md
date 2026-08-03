@@ -40,6 +40,15 @@ Recommended first test on S24 Exynos:
 
 The app includes a **Benchmark** button after the model is loaded. It runs a fixed 64-token native benchmark and reports generated tokens per second, generated token count, elapsed time, and backend label.
 
+For speed testing, use the **release APK** from GitHub Actions. The release build compiles native llama.cpp with `CMAKE_BUILD_TYPE=Release`; the earlier debug APK used `Debug`, which can be much slower. The release variant is signed with the debug signing key so it can be installed directly for local testing.
+
+Tap **Show settings** after loading a model to see native diagnostics. The diagnostics include:
+
+- native build type: `Release` or `Debug`
+- backend request
+- requested GPU layers, context size, and threads
+- llama.cpp native logs, including Vulkan/offload messages when llama.cpp emits them
+
 ## Prepare llama.cpp
 
 From the project root:
@@ -54,14 +63,14 @@ If you prefer command line builds, install Gradle 8.11.1 or generate a wrapper:
 
 ```bash
 gradle wrapper --gradle-version 8.11.1
-./gradlew :app:assembleDebug
+./gradlew :app:assembleRelease
 ```
 
 ## CPU Build
 
 CPU is the safest first build:
 
-Use Android Studio, or run `./gradlew :app:assembleDebug` after generating the wrapper.
+Use Android Studio, or run `./gradlew :app:assembleDebug` after generating the wrapper. This is useful for development, but it is not the build to use for measuring tokens/second.
 
 ## Vulkan GPU Build
 
