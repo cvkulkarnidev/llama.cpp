@@ -30,8 +30,15 @@ jobs:
       - name: Install native toolchain
         run: |
           sudo apt-get update
-          sudo apt-get install -y glslc spirv-headers spirv-tools libvulkan-dev
+          sudo apt-get install -y glslc spirv-tools libvulkan-dev
           sdkmanager "ndk;27.2.12479018" "cmake;3.22.1"
+
+      - name: Install SPIRV-Headers CMake package
+        run: |
+          git clone --depth 1 https://github.com/KhronosGroup/SPIRV-Headers .deps/SPIRV-Headers
+          cmake -S .deps/SPIRV-Headers -B .deps/SPIRV-Headers/build \
+            -DCMAKE_INSTALL_PREFIX="$GITHUB_WORKSPACE/.deps/spirv-headers-install"
+          cmake --install .deps/SPIRV-Headers/build
 
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
@@ -43,6 +50,8 @@ jobs:
 
       - name: Build debug APK
         run: ./gradlew :app:assembleDebug
+        env:
+          CMAKE_PREFIX_PATH: ${{ github.workspace }}/.deps/spirv-headers-install
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
