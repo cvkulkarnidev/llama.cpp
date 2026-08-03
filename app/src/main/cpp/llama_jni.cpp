@@ -608,7 +608,7 @@ Java_dev_chinmay_llamacppgemma_LlamaBridge_loadModel(
         append_diagnostic("app: model_loaded_on=" + selected_backend + "\n");
         append_diagnostic(
             "app: optimizations=persistent_context,prefix_kv_cache,batched_streaming,last_decode_elision,"
-            "flash_attention_auto,op_offload,kv_offload,armv8.7a,lto\n"
+            "flash_attention_auto,op_offload,kv_offload,armv8.7a\n"
         );
         append_diagnostic(
             "app: actual_context_size=" + std::to_string(llama_n_ctx(g_engine.ctx)) +

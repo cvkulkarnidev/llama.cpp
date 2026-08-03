@@ -139,8 +139,8 @@ separately; displayed tokens/sec uses generation time only.
 - Generation streams into the active assistant message; one request runs at a time.
 - The native context stays allocated between requests and reuses the exact common KV-cache prefix.
   Streaming callbacks are paced to roughly display refresh cadence to avoid JNI and UI work per token.
-- Release builds target Armv8.7-A, use link-time optimization, warm Vulkan/CPU graphs at model load,
-  keep Flash Attention and operation/KV offload enabled, and skip an unused final-token decode.
+- Release builds target Armv8.7-A, warm Vulkan/CPU graphs at model load, keep Flash Attention and
+  operation/KV offload enabled, and skip an unused final-token decode.
 - Hard native driver crashes or process-level out-of-memory kills cannot be converted into a Kotlin
   error dialog.
 - NPU via LiteRT-LM would require a second inference engine and a non-GGUF model deployment path;
