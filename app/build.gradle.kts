@@ -35,6 +35,7 @@ android {
                     "-DGGML_LLAMAFILE=OFF",
                     "-DGGML_CPU_ARM_ARCH=armv8.7-a",
                     "-DCMAKE_INTERPROCEDURAL_OPTIMIZATION=ON",
+                    "-DCMAKE_SHARED_LINKER_FLAGS=-fuse-ld=lld",
                 )
                 System.getenv("SPIRV_HEADERS_DIR")?.takeIf { it.isNotBlank() }?.let {
                     cmakeArguments += "-DSPIRV-Headers_DIR=$it"
@@ -59,6 +60,12 @@ android {
 
     buildFeatures {
         compose = true
+    }
+
+    packaging {
+        jniLibs {
+            useLegacyPackaging = false
+        }
     }
 
     signingConfigs {
