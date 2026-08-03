@@ -25,5 +25,7 @@ object LlamaBridge {
         temperature: Float,
     ): String
 
+    external fun diagnostics(): String
+
     external fun unload()
 }
