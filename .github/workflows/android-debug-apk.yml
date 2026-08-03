@@ -43,6 +43,11 @@ jobs:
           test -n "$SPIRV_HEADERS_DIR"
           echo "SPIRV_HEADERS_DIR=$SPIRV_HEADERS_DIR" >> "$GITHUB_ENV"
 
+      - name: Fetch Vulkan headers
+        run: |
+          git clone --depth 1 https://github.com/KhronosGroup/Vulkan-Headers .deps/Vulkan-Headers
+          echo "VULKAN_HEADERS_INCLUDE_DIR=$GITHUB_WORKSPACE/.deps/Vulkan-Headers/include" >> "$GITHUB_ENV"
+
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
         with:
