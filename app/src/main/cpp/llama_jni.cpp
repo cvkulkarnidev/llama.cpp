@@ -22,8 +22,13 @@ struct Engine {
     llama_sampler * sampler = nullptr;
     llama_context_params ctx_params;
     std::mutex mutex;
+    std::mutex log_mutex;
     bool backend_initialized = false;
     std::string loaded_backend = "CPU";
+    std::string diagnostics;
+    int requested_gpu_layers = 0;
+    int requested_context_size = 0;
+    int requested_threads = 0;
 };
 
 Engine g_engine;
@@ -43,6 +48,31 @@ jstring string_to_jstring(JNIEnv * env, const std::string & value) {
 void throw_java(JNIEnv * env, const char * message) {
     auto clazz = env->FindClass("java/lang/IllegalStateException");
     env->ThrowNew(clazz, message);
+}
+
+void append_diagnostic(const std::string & text) {
+    std::lock_guard<std::mutex> lock(g_engine.log_mutex);
+    g_engine.diagnostics += text;
+    constexpr size_t max_diagnostics = 12000;
+    if (g_engine.diagnostics.size() > max_diagnostics) {
+        g_engine.diagnostics.erase(0, g_engine.diagnostics.size() - max_diagnostics);
+    }
+}
+
+void clear_diagnostics() {
+    std::lock_guard<std::mutex> lock(g_engine.log_mutex);
+    g_engine.diagnostics.clear();
+}
+
+std::string diagnostics_snapshot() {
+    std::lock_guard<std::mutex> lock(g_engine.log_mutex);
+    return g_engine.diagnostics;
+}
+
+void llama_log_callback(enum ggml_log_level, const char * text, void *) {
+    if (text) {
+        append_diagnostic(text);
+    }
 }
 
 void unload_locked() {
@@ -121,23 +151,33 @@ Java_dev_chinmay_llamacppgemma_LlamaBridge_loadModel(
 
     try {
         if (!g_engine.backend_initialized) {
+            llama_log_set(llama_log_callback, nullptr);
             ggml_backend_load_all();
             llama_backend_init();
             g_engine.backend_initialized = true;
         }
 
         unload_locked();
+        clear_diagnostics();
 
         const std::string path = jstring_to_string(env, model_path);
         const std::string backend_name = jstring_to_string(env, backend);
+        g_engine.requested_gpu_layers = std::max(0, static_cast<int>(gpu_layers));
+        g_engine.requested_context_size = std::max(512, static_cast<int>(context_size));
+        g_engine.requested_threads = std::max(1, static_cast<int>(threads));
+        append_diagnostic("app: native_build_type=" LLAMACPP_GEMMA_BUILD_TYPE "\n");
+        append_diagnostic("app: backend_request=" + backend_name +
+            " gpu_layers_requested=" + std::to_string(g_engine.requested_gpu_layers) +
+            " context_size=" + std::to_string(g_engine.requested_context_size) +
+            " threads=" + std::to_string(g_engine.requested_threads) + "\n");
 
         llama_model_params model_params = llama_model_default_params();
-        model_params.n_gpu_layers = std::max(0, static_cast<int>(gpu_layers));
+        model_params.n_gpu_layers = g_engine.requested_gpu_layers;
 
         g_engine.ctx_params = llama_context_default_params();
-        g_engine.ctx_params.n_ctx = static_cast<uint32_t>(std::max(512, static_cast<int>(context_size)));
-        g_engine.ctx_params.n_threads = std::max(1, static_cast<int>(threads));
-        g_engine.ctx_params.n_threads_batch = std::max(1, static_cast<int>(threads));
+        g_engine.ctx_params.n_ctx = static_cast<uint32_t>(g_engine.requested_context_size);
+        g_engine.ctx_params.n_threads = g_engine.requested_threads;
+        g_engine.ctx_params.n_threads_batch = g_engine.requested_threads;
 
         g_engine.model = llama_model_load_from_file(path.c_str(), model_params);
         if (!g_engine.model) {
@@ -301,6 +341,10 @@ Java_dev_chinmay_llamacppgemma_LlamaBridge_benchmark(
         const long long safe_elapsed_ms = std::max<long long>(1, static_cast<long long>(elapsed_ms));
         const std::string result =
             "backend=" + g_engine.loaded_backend +
+            ";build_type=" LLAMACPP_GEMMA_BUILD_TYPE +
+            ";gpu_layers_requested=" + std::to_string(g_engine.requested_gpu_layers) +
+            ";context_size=" + std::to_string(g_engine.requested_context_size) +
+            ";threads=" + std::to_string(g_engine.requested_threads) +
             ";prompt_tokens=" + std::to_string(tokens.size()) +
             ";generated_tokens=" + std::to_string(generated) +
             ";elapsed_ms=" + std::to_string(safe_elapsed_ms);
@@ -312,6 +356,11 @@ Java_dev_chinmay_llamacppgemma_LlamaBridge_benchmark(
         throw_java(env, e.what());
         return nullptr;
     }
+}
+
+extern "C" JNIEXPORT jstring JNICALL
+Java_dev_chinmay_llamacppgemma_LlamaBridge_diagnostics(JNIEnv * env, jobject) {
+    return string_to_jstring(env, diagnostics_snapshot());
 }
 
 extern "C" JNIEXPORT void JNICALL
