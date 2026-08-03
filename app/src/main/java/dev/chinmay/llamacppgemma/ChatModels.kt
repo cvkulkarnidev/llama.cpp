@@ -20,6 +20,10 @@ data class InferenceSettings(
 
 data class BenchmarkResult(
     val backend: String,
+    val buildType: String,
+    val gpuLayersRequested: Int,
+    val contextSize: Int,
+    val threads: Int,
     val promptTokens: Int,
     val generatedTokens: Int,
     val elapsedMs: Long,
@@ -33,6 +37,7 @@ data class ChatUiState(
     val modelPath: String? = null,
     val modelName: String = "No model selected",
     val loadedBackend: String? = null,
+    val nativeDiagnostics: String = "",
     val benchmark: BenchmarkResult? = null,
     val settings: InferenceSettings = InferenceSettings(),
     val messages: List<ChatMessage> = emptyList(),
