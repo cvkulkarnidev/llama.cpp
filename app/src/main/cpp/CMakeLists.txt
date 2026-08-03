@@ -29,10 +29,18 @@ if(GGML_VULKAN AND SPIRV_HEADERS_INCLUDE_DIR AND TARGET ggml-vulkan)
     target_include_directories(ggml-vulkan PRIVATE "${SPIRV_HEADERS_INCLUDE_DIR}")
 endif()
 
+# CMake 3.22's Android platform module embeds gold in the shared-library creation
+# flags after normal and target link options. Remove that deprecated selection;
+# ThinLTO bitcode requires the NDK's LLVM lld linker.
+if(ANDROID AND CMAKE_INTERPROCEDURAL_OPTIMIZATION)
+    string(REPLACE "-fuse-ld=gold" "" CMAKE_SHARED_LIBRARY_CREATE_C_FLAGS
+        "${CMAKE_SHARED_LIBRARY_CREATE_C_FLAGS}")
+    string(REPLACE "-fuse-ld=gold" "" CMAKE_SHARED_LIBRARY_CREATE_CXX_FLAGS
+        "${CMAKE_SHARED_LIBRARY_CREATE_CXX_FLAGS}")
+endif()
+
 add_library(llamacpp_jni SHARED llama_jni.cpp)
 
-# CMake 3.22's Android integration appends gold after global linker flags. Keep
-# lld as the final linker selection because ThinLTO bitcode requires LLVM lld.
 if(ANDROID AND CMAKE_INTERPROCEDURAL_OPTIMIZATION)
     target_link_options(llamacpp_jni PRIVATE "-fuse-ld=lld")
 endif()
