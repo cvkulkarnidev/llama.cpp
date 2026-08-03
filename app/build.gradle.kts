@@ -25,11 +25,10 @@ android {
                 cppFlags += listOf("-std=c++17", "-fexceptions", "-frtti")
                 arguments += listOf(
                     "-DANDROID_STL=c++_shared",
-                    "-DLLAMA_CPP_DIR=${rootDir}/third_party/llama.cpp"
-
-                    // Uncomment one backend after vendoring llama.cpp:
-                    // "-DGGML_VULKAN=ON",
-                    // "-DGGML_OPENCL=ON",
+                    "-DLLAMA_CPP_DIR=${rootDir}/third_party/llama.cpp",
+                    "-DGGML_VULKAN=ON",
+                    "-DGGML_OPENMP=OFF",
+                    "-DGGML_OPENCL=OFF",
                 )
             }
         }
