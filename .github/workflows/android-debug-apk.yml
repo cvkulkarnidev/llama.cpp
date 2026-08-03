@@ -42,6 +42,7 @@ jobs:
           SPIRV_HEADERS_DIR="$(dirname "$(find "$GITHUB_WORKSPACE/.deps/spirv-headers-install" -name 'SPIRV-HeadersConfig.cmake' -print -quit)")"
           test -n "$SPIRV_HEADERS_DIR"
           echo "SPIRV_HEADERS_DIR=$SPIRV_HEADERS_DIR" >> "$GITHUB_ENV"
+          echo "SPIRV_HEADERS_INCLUDE_DIR=$GITHUB_WORKSPACE/.deps/spirv-headers-install/include" >> "$GITHUB_ENV"
 
       - name: Fetch Vulkan headers
         run: |
