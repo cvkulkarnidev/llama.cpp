@@ -39,6 +39,9 @@ jobs:
           cmake -S .deps/SPIRV-Headers -B .deps/SPIRV-Headers/build \
             -DCMAKE_INSTALL_PREFIX="$GITHUB_WORKSPACE/.deps/spirv-headers-install"
           cmake --install .deps/SPIRV-Headers/build
+          SPIRV_HEADERS_DIR="$(dirname "$(find "$GITHUB_WORKSPACE/.deps/spirv-headers-install" -name 'SPIRV-HeadersConfig.cmake' -print -quit)")"
+          test -n "$SPIRV_HEADERS_DIR"
+          echo "SPIRV_HEADERS_DIR=$SPIRV_HEADERS_DIR" >> "$GITHUB_ENV"
 
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
@@ -50,8 +53,6 @@ jobs:
 
       - name: Build debug APK
         run: ./gradlew :app:assembleDebug
-        env:
-          CMAKE_PREFIX_PATH: ${{ github.workspace }}/.deps/spirv-headers-install
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
