@@ -23,13 +23,17 @@ android {
         externalNativeBuild {
             cmake {
                 cppFlags += listOf("-std=c++17", "-fexceptions", "-frtti")
-                arguments += listOf(
+                val cmakeArguments = mutableListOf(
                     "-DANDROID_STL=c++_shared",
                     "-DLLAMA_CPP_DIR=${rootDir}/third_party/llama.cpp",
                     "-DGGML_VULKAN=ON",
                     "-DGGML_OPENMP=OFF",
                     "-DGGML_OPENCL=OFF",
                 )
+                System.getenv("SPIRV_HEADERS_DIR")?.takeIf { it.isNotBlank() }?.let {
+                    cmakeArguments += "-DSPIRV-Headers_DIR=$it"
+                }
+                arguments += cmakeArguments
             }
         }
     }
