@@ -33,6 +33,9 @@ android {
                 System.getenv("SPIRV_HEADERS_DIR")?.takeIf { it.isNotBlank() }?.let {
                     cmakeArguments += "-DSPIRV-Headers_DIR=$it"
                 }
+                System.getenv("SPIRV_HEADERS_INCLUDE_DIR")?.takeIf { it.isNotBlank() }?.let {
+                    cmakeArguments += "-DSPIRV_HEADERS_INCLUDE_DIR=$it"
+                }
                 System.getenv("VULKAN_HEADERS_INCLUDE_DIR")?.takeIf { it.isNotBlank() }?.let {
                     cmakeArguments += "-DVULKAN_HEADERS_INCLUDE_DIR=$it"
                 }
