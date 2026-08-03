@@ -6,6 +6,7 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 set(LLAMA_CPP_DIR "" CACHE PATH "Path to llama.cpp checkout")
+set(LLAMA_CPP_REVISION "unknown" CACHE STRING "Pinned llama.cpp Git revision")
 set(SPIRV_HEADERS_INCLUDE_DIR "" CACHE PATH "Path to SPIR-V Headers include directory")
 set(VULKAN_HEADERS_INCLUDE_DIR "" CACHE PATH "Path to Vulkan-Headers include directory")
 
@@ -38,6 +39,7 @@ target_compile_definitions(
     llamacpp_jni
     PRIVATE
     "LLAMACPP_GEMMA_BUILD_TYPE=\"${LLAMACPP_GEMMA_NATIVE_BUILD_TYPE}\""
+    "LLAMACPP_GEMMA_LLAMA_REVISION=\"${LLAMA_CPP_REVISION}\""
 )
 
 if(GGML_VULKAN)

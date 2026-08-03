@@ -22,6 +22,8 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun setBackend(backend: LlamaBackend) {
+        val current = _state.value
+        if (current.isBusy || current.settings.backend == backend) return
         _state.update {
             it.copy(
                 settings = it.settings.copy(
@@ -30,12 +32,24 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                     contextSize = backend.defaultContextSize,
                     threads = backend.defaultThreads,
                 ),
+                loadedBackend = null,
+                benchmark = null,
             )
         }
     }
 
     fun setGpuLayers(value: Int) {
-        _state.update { it.copy(settings = it.settings.copy(gpuLayers = value.coerceIn(0, 999))) }
+        val current = _state.value
+        val minimum = if (current.settings.backend == LlamaBackend.Vulkan) 1 else 0
+        val gpuLayers = value.coerceIn(minimum, 999)
+        if (current.isBusy || current.settings.gpuLayers == gpuLayers) return
+        _state.update {
+            it.copy(
+                settings = it.settings.copy(gpuLayers = gpuLayers),
+                loadedBackend = null,
+                benchmark = null,
+            )
+        }
     }
 
     fun dismissError() {
@@ -43,10 +57,19 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun selectModel(uri: Uri) {
+        if (_state.value.isBusy) return
         viewModelScope.launch {
-            _state.update { it.copy(isBusy = true, error = null) }
+            _state.update {
+                it.copy(
+                    isBusy = true,
+                    error = null,
+                    loadedBackend = null,
+                    benchmark = null,
+                )
+            }
             runCatching {
                 withContext(Dispatchers.IO) {
+                    LlamaBridge.unload()
                     copyModelToPrivateStorage(uri)
                 }
             }.onSuccess { model ->
@@ -58,6 +81,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                         loadedBackend = null,
                         nativeDiagnostics = "",
                         benchmark = null,
+                        messages = emptyList(),
                         isBusy = false,
                     )
                 }
@@ -138,7 +162,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                         nativeDiagnostics = LlamaBridge.diagnostics(),
                         messages = it.messages + ChatMessage(
                             ChatMessage.Role.System,
-                            "Benchmark: ${"%.2f".format(result.tokensPerSecond)} tok/s (${result.buildType}, ${result.generatedTokens} tokens in ${result.elapsedMs} ms)",
+                            "Benchmark: ${"%.2f".format(result.tokensPerSecond)} tok/s (${result.buildType}, ${result.generatedTokens} tokens in ${result.generationMs} ms; prompt ${result.promptEvalMs} ms)",
                         ),
                     )
                 }
@@ -163,7 +187,17 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             return
         }
 
-        val prompt = buildPrompt(current.messages, userText)
+        val chat = (current.messages
+            .filter { it.role != ChatMessage.Role.System }
+            .takeLast(8) + ChatMessage(ChatMessage.Role.User, userText))
+        val roles = chat.map { message ->
+            when (message.role) {
+                ChatMessage.Role.User -> "user"
+                ChatMessage.Role.Assistant -> "assistant"
+                ChatMessage.Role.System -> "system"
+            }
+        }.toTypedArray()
+        val contents = chat.map(ChatMessage::text).toTypedArray()
         _state.update {
             it.copy(
                 input = "",
@@ -177,7 +211,8 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             runCatching {
                 withContext(Dispatchers.Default) {
                     LlamaBridge.generate(
-                        prompt = prompt,
+                        roles = roles,
+                        contents = contents,
                         maxTokens = current.settings.maxTokens,
                         temperature = current.settings.temperature,
                     )
@@ -204,6 +239,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         val context = getApplication<Application>()
         val modelsDir = File(context.filesDir, "models").apply { mkdirs() }
         val displayName = queryDisplayName(uri).ifBlank { "model.gguf" }
+        require(displayName.endsWith(".gguf", ignoreCase = true)) { "Select a .gguf model file" }
         val outFile = File(modelsDir, displayName.replace(Regex("[^A-Za-z0-9._-]"), "_"))
 
         context.contentResolver.openInputStream(uri).use { input ->
@@ -219,27 +255,6 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             val index = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
             if (index >= 0 && cursor.moveToFirst()) cursor.getString(index) else ""
         }.orEmpty()
-    }
-
-    private fun buildPrompt(history: List<ChatMessage>, userText: String): String {
-        val turns = history
-            .filter { it.role != ChatMessage.Role.System }
-            .takeLast(8)
-            .joinToString("\n") { message ->
-                when (message.role) {
-                    ChatMessage.Role.User -> "User: ${message.text}"
-                    ChatMessage.Role.Assistant -> "Assistant: ${message.text}"
-                    ChatMessage.Role.System -> ""
-                }
-            }
-
-        return """
-            <start_of_turn>user
-            $turns
-            User: $userText
-            <end_of_turn>
-            <start_of_turn>model
-        """.trimIndent()
     }
 
     private fun parseBenchmark(raw: String, fallbackBackend: String): BenchmarkResult {
@@ -258,16 +273,15 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             threads = values["threads"]?.toIntOrNull() ?: 0,
             promptTokens = values["prompt_tokens"]?.toIntOrNull() ?: 0,
             generatedTokens = values["generated_tokens"]?.toIntOrNull() ?: 0,
-            elapsedMs = values["elapsed_ms"]?.toLongOrNull() ?: 0L,
+            promptEvalMs = values["prompt_eval_ms"]?.toLongOrNull() ?: 0L,
+            generationMs = values["generation_ms"]?.toLongOrNull()
+                ?: values["elapsed_ms"]?.toLongOrNull()
+                ?: 0L,
         )
     }
 
     private companion object {
-        const val BENCHMARK_PROMPT = """
-            <start_of_turn>user
-            Give a concise checklist for running a small language model locally on Android.
-            <end_of_turn>
-            <start_of_turn>model
-        """
+        const val BENCHMARK_PROMPT =
+            "Give a concise checklist for running a small language model locally on Android."
     }
 }

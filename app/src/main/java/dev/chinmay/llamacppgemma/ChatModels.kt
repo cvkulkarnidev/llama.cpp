@@ -26,10 +26,14 @@ data class BenchmarkResult(
     val threads: Int,
     val promptTokens: Int,
     val generatedTokens: Int,
-    val elapsedMs: Long,
+    val promptEvalMs: Long,
+    val generationMs: Long,
 ) {
     val tokensPerSecond: Double
-        get() = if (elapsedMs <= 0L) 0.0 else generatedTokens * 1000.0 / elapsedMs.toDouble()
+        get() = if (generationMs <= 0L) 0.0 else generatedTokens * 1000.0 / generationMs.toDouble()
+
+    val totalMs: Long
+        get() = promptEvalMs + generationMs
 }
 
 data class ChatUiState(

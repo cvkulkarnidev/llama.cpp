@@ -14,7 +14,8 @@ object LlamaBridge {
     ): String
 
     external fun generate(
-        prompt: String,
+        roles: Array<String>,
+        contents: Array<String>,
         maxTokens: Int,
         temperature: Float,
     ): String

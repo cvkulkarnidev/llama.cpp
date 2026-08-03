@@ -185,7 +185,7 @@ private fun ModelPanel(
                         style = MaterialTheme.typography.bodySmall,
                     )
                 }
-                TextButton(onClick = onPick) { Text("Pick GGUF") }
+                TextButton(enabled = !state.isBusy, onClick = onPick) { Text("Pick GGUF") }
                 Button(enabled = !state.isBusy, onClick = onLoad) { Text("Load") }
             }
 
@@ -202,12 +202,17 @@ private fun ModelPanel(
                             color = MaterialTheme.colorScheme.primary,
                         )
                         Text(
-                            "${result.generatedTokens} tokens, ${result.elapsedMs} ms, ${result.buildType}, ${result.backend}",
+                            "${result.generatedTokens} tokens in ${result.generationMs} ms, ${result.buildType}",
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                         Text(
-                            "gpuLayers=${result.gpuLayersRequested}, ctx=${result.contextSize}, threads=${result.threads}",
+                            "prompt=${result.promptTokens} tokens/${result.promptEvalMs} ms; gpuLayers=${result.gpuLayersRequested}, ctx=${result.contextSize}, threads=${result.threads}",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        Text(
+                            result.backend,
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
@@ -230,10 +235,14 @@ private fun ModelPanel(
             }
 
             if (showSettings) {
-                ExposedDropdownMenuBox(expanded = expanded, onExpandedChange = { expanded = it }) {
+                ExposedDropdownMenuBox(
+                    expanded = expanded,
+                    onExpandedChange = { if (!state.isBusy) expanded = it },
+                ) {
                     OutlinedTextField(
                         value = state.settings.backend.label,
                         onValueChange = {},
+                        enabled = !state.isBusy,
                         readOnly = true,
                         label = { Text("Backend") },
                         trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded) },
@@ -258,8 +267,9 @@ private fun ModelPanel(
                 Slider(
                     value = state.settings.gpuLayers.toFloat(),
                     onValueChange = { onGpuLayers(it.toInt()) },
-                    valueRange = 0f..99f,
-                    steps = 98,
+                    enabled = !state.isBusy && state.settings.backend == LlamaBackend.Vulkan,
+                    valueRange = if (state.settings.backend == LlamaBackend.Vulkan) 1f..99f else 0f..99f,
+                    steps = if (state.settings.backend == LlamaBackend.Vulkan) 97 else 98,
                 )
 
                 if (state.nativeDiagnostics.isNotBlank()) {

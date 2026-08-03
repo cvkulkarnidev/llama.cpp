@@ -4,6 +4,8 @@ plugins {
     id("org.jetbrains.kotlin.plugin.compose")
 }
 
+val llamaCppRevision = rootProject.file("scripts/llama_cpp_revision.txt").readText().trim()
+
 android {
     namespace = "dev.chinmay.llamacppgemma"
     compileSdk = 35
@@ -26,9 +28,11 @@ android {
                 val cmakeArguments = mutableListOf(
                     "-DANDROID_STL=c++_shared",
                     "-DLLAMA_CPP_DIR=${rootDir}/third_party/llama.cpp",
+                    "-DLLAMA_CPP_REVISION=$llamaCppRevision",
                     "-DGGML_VULKAN=ON",
                     "-DGGML_OPENMP=OFF",
                     "-DGGML_OPENCL=OFF",
+                    "-DGGML_LLAMAFILE=OFF",
                 )
                 System.getenv("SPIRV_HEADERS_DIR")?.takeIf { it.isNotBlank() }?.let {
                     cmakeArguments += "-DSPIRV-Headers_DIR=$it"
