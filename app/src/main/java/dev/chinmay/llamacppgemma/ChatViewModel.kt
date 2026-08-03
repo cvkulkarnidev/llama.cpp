@@ -203,25 +203,73 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 input = "",
                 isBusy = true,
                 error = null,
-                messages = it.messages + ChatMessage(ChatMessage.Role.User, userText),
+                messages = it.messages + listOf(
+                    ChatMessage(ChatMessage.Role.User, userText),
+                    ChatMessage(
+                        role = ChatMessage.Role.Assistant,
+                        text = "",
+                        metrics = GenerationMetrics(
+                            promptTokens = 0,
+                            generatedTokens = 0,
+                            promptEvalMs = 0,
+                            generationMs = 0,
+                            isComplete = false,
+                        ),
+                    ),
+                ),
             )
         }
 
         viewModelScope.launch {
             runCatching {
                 withContext(Dispatchers.Default) {
+                    val callback = GenerationCallback {
+                            outputUtf8,
+                            generatedTokens,
+                            promptTokens,
+                            promptEvalMs,
+                            generationMs ->
+                        val output = String(outputUtf8, Charsets.UTF_8)
+                        _state.update { state ->
+                            val messages = state.messages.toMutableList()
+                            val index = messages.lastIndex
+                            if (index >= 0 && messages[index].role == ChatMessage.Role.Assistant) {
+                                messages[index] = messages[index].copy(
+                                    text = output,
+                                    metrics = GenerationMetrics(
+                                        promptTokens = promptTokens,
+                                        generatedTokens = generatedTokens,
+                                        promptEvalMs = promptEvalMs,
+                                        generationMs = generationMs,
+                                        isComplete = false,
+                                    ),
+                                )
+                            }
+                            state.copy(messages = messages)
+                        }
+                    }
                     LlamaBridge.generate(
                         roles = roles,
                         contents = contents,
                         maxTokens = current.settings.maxTokens,
                         temperature = current.settings.temperature,
+                        callback = callback,
                     )
                 }
-            }.onSuccess { answer ->
-                _state.update {
-                    it.copy(
+            }.mapCatching(::parseGenerationMetrics).onSuccess { metrics ->
+                _state.update { state ->
+                    val messages = state.messages.toMutableList()
+                    val index = messages.lastIndex
+                    if (index >= 0 && messages[index].role == ChatMessage.Role.Assistant) {
+                        messages[index] = messages[index].copy(
+                            text = messages[index].text.trim(),
+                            metrics = metrics,
+                        )
+                    }
+                    state.copy(
                         isBusy = false,
-                        messages = it.messages + ChatMessage(ChatMessage.Role.Assistant, answer.trim()),
+                        nativeDiagnostics = runCatching { LlamaBridge.diagnostics() }.getOrDefault(""),
+                        messages = messages,
                     )
                 }
             }.onFailure { e ->
@@ -277,6 +325,23 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             generationMs = values["generation_ms"]?.toLongOrNull()
                 ?: values["elapsed_ms"]?.toLongOrNull()
                 ?: 0L,
+        )
+    }
+
+    private fun parseGenerationMetrics(raw: String): GenerationMetrics {
+        val values = raw.split(';')
+            .mapNotNull { part ->
+                val pieces = part.split('=', limit = 2)
+                if (pieces.size == 2) pieces[0] to pieces[1] else null
+            }
+            .toMap()
+
+        return GenerationMetrics(
+            promptTokens = values["prompt_tokens"]?.toIntOrNull() ?: 0,
+            generatedTokens = values["generated_tokens"]?.toIntOrNull() ?: 0,
+            promptEvalMs = values["prompt_eval_ms"]?.toLongOrNull() ?: 0L,
+            generationMs = values["generation_ms"]?.toLongOrNull() ?: 0L,
+            isComplete = true,
         )
     }
 

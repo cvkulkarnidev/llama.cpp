@@ -17,6 +17,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -34,6 +35,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -84,8 +86,15 @@ data class ChatActions(
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ChatScreen(state: ChatUiState, actions: ChatActions) {
+    val messageListState = rememberLazyListState()
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         uri?.let(actions.onModelSelected)
+    }
+
+    LaunchedEffect(state.messages.size, state.messages.lastOrNull()?.text?.length) {
+        if (state.messages.isNotEmpty()) {
+            messageListState.scrollToItem(state.messages.lastIndex)
+        }
     }
 
     state.error?.let { error ->
@@ -124,6 +133,7 @@ fun ChatScreen(state: ChatUiState, actions: ChatActions) {
             )
 
             LazyColumn(
+                state = messageListState,
                 modifier = Modifier
                     .weight(1f)
                     .fillMaxWidth(),
@@ -302,11 +312,34 @@ private fun MessageBubble(message: ChatMessage) {
             tonalElevation = 1.dp,
             modifier = Modifier.fillMaxWidth(if (message.role == ChatMessage.Role.System) 1f else 0.88f),
         ) {
-            Text(
-                text = message.text,
+            Column(
                 modifier = Modifier.padding(12.dp),
-                style = MaterialTheme.typography.bodyMedium,
-            )
+                verticalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                Text(
+                    text = if (message.text.isEmpty() && message.metrics?.isComplete == false) {
+                        "…"
+                    } else {
+                        message.text
+                    },
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+                message.metrics?.let { metrics ->
+                    val timing = if (metrics.isComplete) {
+                        "${metrics.generatedTokens} tokens • ${"%.2f".format(metrics.tokensPerSecond)} tok/s • " +
+                            "prompt ${metrics.promptTokens} tokens/${metrics.promptEvalMs} ms • " +
+                            "generation ${metrics.generationMs} ms • total ${metrics.totalMs} ms"
+                    } else {
+                        "${metrics.generatedTokens} tokens • ${metrics.generationMs} ms generating • " +
+                            "prompt ${metrics.promptTokens} tokens/${metrics.promptEvalMs} ms"
+                    }
+                    Text(
+                        text = timing,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
         }
     }
     Spacer(Modifier.height(2.dp))

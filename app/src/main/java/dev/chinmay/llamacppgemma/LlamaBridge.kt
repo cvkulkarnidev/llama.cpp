@@ -18,6 +18,7 @@ object LlamaBridge {
         contents: Array<String>,
         maxTokens: Int,
         temperature: Float,
+        callback: GenerationCallback,
     ): String
 
     external fun benchmark(
@@ -29,4 +30,14 @@ object LlamaBridge {
     external fun diagnostics(): String
 
     external fun unload()
+}
+
+fun interface GenerationCallback {
+    fun onToken(
+        outputUtf8: ByteArray,
+        generatedTokens: Int,
+        promptTokens: Int,
+        promptEvalMs: Long,
+        generationMs: Long,
+    )
 }

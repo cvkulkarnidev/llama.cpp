@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <cctype>
 #include <chrono>
+#include <functional>
 #include <mutex>
 #include <stdexcept>
 #include <string>
@@ -306,16 +307,20 @@ void reset_context_and_sampler(float temperature) {
 
 struct InferenceResult {
     std::string output;
+    int prompt_tokens = 0;
     int generated_tokens = 0;
     long long prompt_eval_ms = 0;
     long long generation_ms = 0;
 };
 
+using StreamCallback = std::function<void(const InferenceResult &)>;
+
 InferenceResult run_inference(
     const std::string & prompt,
     int max_tokens,
     float temperature,
-    bool capture_output
+    bool capture_output,
+    const StreamCallback & on_token = {}
 ) {
     reset_context_and_sampler(std::max(0.0f, temperature));
 
@@ -340,12 +345,16 @@ InferenceResult run_inference(
     }
 
     InferenceResult result;
+    result.prompt_tokens = static_cast<int>(tokens.size());
     const auto prompt_started = std::chrono::steady_clock::now();
     llama_batch batch = llama_batch_get_one(tokens.data(), static_cast<int32_t>(tokens.size()));
     if (llama_decode(g_engine.ctx, batch) != 0) {
         throw std::runtime_error("Prompt decode failed");
     }
     const auto prompt_finished = std::chrono::steady_clock::now();
+    result.prompt_eval_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+        prompt_finished - prompt_started
+    ).count();
 
     const auto generation_started = prompt_finished;
     for (int i = 0; i < limit; ++i) {
@@ -354,7 +363,7 @@ InferenceResult run_inference(
             break;
         }
 
-        if (capture_output) {
+        if (capture_output || on_token) {
             result.output += token_to_piece(vocab, next);
         }
         result.generated_tokens += 1;
@@ -363,12 +372,16 @@ InferenceResult run_inference(
         if (llama_decode(g_engine.ctx, next_batch) != 0) {
             throw std::runtime_error("Token decode failed");
         }
+
+        if (on_token) {
+            result.generation_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now() - generation_started
+            ).count();
+            on_token(result);
+        }
     }
     const auto generation_finished = std::chrono::steady_clock::now();
 
-    result.prompt_eval_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-        prompt_finished - prompt_started
-    ).count();
     result.generation_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
         generation_finished - generation_started
     ).count();
@@ -495,7 +508,8 @@ Java_dev_chinmay_llamacppgemma_LlamaBridge_generate(
     jobjectArray roles,
     jobjectArray contents,
     jint max_tokens,
-    jfloat temperature
+    jfloat temperature,
+    jobject callback
 ) {
     std::lock_guard<std::mutex> lock(g_engine.mutex);
 
@@ -506,13 +520,62 @@ Java_dev_chinmay_llamacppgemma_LlamaBridge_generate(
         const auto chat_roles = jobject_array_to_strings(env, roles);
         const auto chat_contents = jobject_array_to_strings(env, contents);
         const std::string prompt = format_chat_prompt(g_engine.model, chat_roles, chat_contents);
+        if (!callback) {
+            throw std::runtime_error("Missing streaming callback");
+        }
+        jclass callback_class = env->GetObjectClass(callback);
+        if (!callback_class) {
+            throw std::runtime_error("Unable to inspect streaming callback");
+        }
+        jmethodID on_token_method = env->GetMethodID(callback_class, "onToken", "([BIIJJ)V");
+        env->DeleteLocalRef(callback_class);
+        if (!on_token_method) {
+            if (env->ExceptionCheck()) env->ExceptionClear();
+            throw std::runtime_error("Streaming callback method was not found");
+        }
+
+        const StreamCallback stream_callback = [&](const InferenceResult & update) {
+            auto output = env->NewByteArray(static_cast<jsize>(update.output.size()));
+            if (!output) {
+                if (env->ExceptionCheck()) env->ExceptionClear();
+                throw std::runtime_error("Unable to allocate streaming output");
+            }
+            if (!update.output.empty()) {
+                env->SetByteArrayRegion(
+                    output,
+                    0,
+                    static_cast<jsize>(update.output.size()),
+                    reinterpret_cast<const jbyte *>(update.output.data())
+                );
+            }
+            env->CallVoidMethod(
+                callback,
+                on_token_method,
+                output,
+                static_cast<jint>(update.generated_tokens),
+                static_cast<jint>(update.prompt_tokens),
+                static_cast<jlong>(update.prompt_eval_ms),
+                static_cast<jlong>(update.generation_ms)
+            );
+            env->DeleteLocalRef(output);
+            if (env->ExceptionCheck()) {
+                env->ExceptionClear();
+                throw std::runtime_error("Streaming callback failed");
+            }
+        };
         const auto result = run_inference(
             prompt,
             static_cast<int>(max_tokens),
             static_cast<float>(temperature),
-            true
+            true,
+            stream_callback
         );
-        return string_to_jstring(env, result.output);
+        const std::string metrics =
+            "prompt_tokens=" + std::to_string(result.prompt_tokens) +
+            ";generated_tokens=" + std::to_string(result.generated_tokens) +
+            ";prompt_eval_ms=" + std::to_string(result.prompt_eval_ms) +
+            ";generation_ms=" + std::to_string(result.generation_ms);
+        return string_to_jstring(env, metrics);
     } catch (const std::exception & e) {
         LOGE("%s", e.what());
         throw_java(env, e.what());
@@ -537,8 +600,6 @@ Java_dev_chinmay_llamacppgemma_LlamaBridge_benchmark(
         const std::vector<std::string> roles = {"user"};
         const std::vector<std::string> contents = {jstring_to_string(env, prompt)};
         const std::string formatted_prompt = format_chat_prompt(g_engine.model, roles, contents);
-        const llama_vocab * vocab = llama_model_get_vocab(g_engine.model);
-        const int prompt_tokens = static_cast<int>(tokenize(vocab, formatted_prompt).size());
         const auto inference = run_inference(
             formatted_prompt,
             static_cast<int>(max_tokens),
@@ -552,7 +613,7 @@ Java_dev_chinmay_llamacppgemma_LlamaBridge_benchmark(
             ";gpu_layers_requested=" + std::to_string(g_engine.requested_gpu_layers) +
             ";context_size=" + std::to_string(g_engine.requested_context_size) +
             ";threads=" + std::to_string(g_engine.requested_threads) +
-            ";prompt_tokens=" + std::to_string(prompt_tokens) +
+            ";prompt_tokens=" + std::to_string(inference.prompt_tokens) +
             ";generated_tokens=" + std::to_string(inference.generated_tokens) +
             ";prompt_eval_ms=" + std::to_string(inference.prompt_eval_ms) +
             ";generation_ms=" + std::to_string(inference.generation_ms) +

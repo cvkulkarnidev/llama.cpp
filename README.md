@@ -125,8 +125,9 @@ The APK is written to `app/build/outputs/apk/release/app-release.apk`.
 6. Confirm diagnostics show a `Vulkan` device and an upstream `offloaded ... layers` message.
 7. Run `Benchmark`, then repeat in CPU mode for comparison.
 
-The benchmark reports prompt-evaluation time separately from generation time. Displayed tokens/sec
-uses generation time only.
+Chat responses stream token-by-token and retain per-response prompt-token count, generated-token
+count, prompt-evaluation time, generation time, total time, and generation tokens/sec. The benchmark
+also reports prompt-evaluation time separately; displayed tokens/sec uses generation time only.
 
 ## Implementation notes and limits
 
@@ -134,7 +135,7 @@ uses generation time only.
 - Kotlin, Jetpack Compose Material 3, MVVM/`StateFlow`, and a C++ JNI bridge.
 - Chat messages are formatted with the GGUF's embedded chat template.
 - Context overflow is checked and requested output is capped to available context space.
-- Generation is currently non-streaming and one request runs at a time.
+- Generation streams into the active assistant message; one request runs at a time.
 - Hard native driver crashes or process-level out-of-memory kills cannot be converted into a Kotlin
   error dialog.
 - NPU via LiteRT-LM would require a second inference engine and a non-GGUF model deployment path;
