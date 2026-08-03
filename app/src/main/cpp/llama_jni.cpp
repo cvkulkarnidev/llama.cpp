@@ -214,6 +214,19 @@ std::string token_to_piece(const llama_vocab * vocab, llama_token token) {
     return std::string(buffer.data(), static_cast<size_t>(size));
 }
 
+std::string format_gemma4_chat_prompt(
+    const std::vector<std::string> & roles,
+    const std::vector<std::string> & contents
+) {
+    std::string formatted;
+    for (size_t i = 0; i < roles.size(); ++i) {
+        const std::string role = roles[i] == "assistant" ? "model" : roles[i];
+        formatted += "<|turn>" + role + "\n" + contents[i] + "<turn|>\n";
+    }
+    formatted += "<|turn>model\n";
+    return formatted;
+}
+
 std::string format_chat_prompt(
     const llama_model * model,
     const std::vector<std::string> & roles,
@@ -246,6 +259,14 @@ std::string format_chat_prompt(
         0
     );
     if (required < 0) {
+        const std::string template_text(chat_template);
+        if (
+            template_text.find("<|turn>") != std::string::npos &&
+            template_text.find("<turn|>") != std::string::npos
+        ) {
+            append_diagnostic("app: chat_template_fallback=gemma4_text\n");
+            return format_gemma4_chat_prompt(roles, contents);
+        }
         throw std::runtime_error("The GGUF chat template is not supported by this llama.cpp build");
     }
 
