@@ -20,6 +20,10 @@ add_subdirectory("${LLAMA_CPP_DIR}" "${CMAKE_BINARY_DIR}/llama.cpp")
 
 add_library(llamacpp_jni SHARED llama_jni.cpp)
 
+if(GGML_VULKAN)
+    target_compile_definitions(llamacpp_jni PRIVATE LLAMACPP_GEMMA_VULKAN_ENABLED=1)
+endif()
+
 target_include_directories(llamacpp_jni PRIVATE
     "${LLAMA_CPP_DIR}/include"
     "${LLAMA_CPP_DIR}/ggml/include"
