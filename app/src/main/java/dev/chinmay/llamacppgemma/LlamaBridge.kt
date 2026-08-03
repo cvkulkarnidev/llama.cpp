@@ -19,5 +19,11 @@ object LlamaBridge {
         temperature: Float,
     ): String
 
+    external fun benchmark(
+        prompt: String,
+        maxTokens: Int,
+        temperature: Float,
+    ): String
+
     external fun unload()
 }
