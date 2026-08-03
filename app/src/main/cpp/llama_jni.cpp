@@ -2,6 +2,7 @@
 #include <android/log.h>
 
 #include <algorithm>
+#include <chrono>
 #include <mutex>
 #include <stdexcept>
 #include <string>
@@ -155,12 +156,14 @@ Java_dev_chinmay_llamacppgemma_LlamaBridge_loadModel(
 
         if (backend_name == "cpu" || gpu_layers <= 0) {
             g_engine.loaded_backend = "CPU";
-        } else if (backend_name == "qnn") {
-            g_engine.loaded_backend = "QNN/NPU if compiled, otherwise llama.cpp fallback";
-        } else if (backend_name == "opencl") {
-            g_engine.loaded_backend = "OpenCL GPU if compiled, otherwise llama.cpp fallback";
+        } else if (backend_name == "vulkan") {
+#ifdef LLAMACPP_GEMMA_VULKAN_ENABLED
+            g_engine.loaded_backend = "Vulkan GPU requested";
+#else
+            g_engine.loaded_backend = "CPU - Vulkan not compiled into this APK";
+#endif
         } else {
-            g_engine.loaded_backend = "Vulkan GPU if compiled, otherwise llama.cpp fallback";
+            g_engine.loaded_backend = "CPU";
         }
 
         LOGI("Loaded model %s with backend request %s and gpu_layers=%d", path.c_str(), backend_name.c_str(), gpu_layers);
@@ -229,6 +232,81 @@ Java_dev_chinmay_llamacppgemma_LlamaBridge_generate(
         }
 
         return string_to_jstring(env, output);
+    } catch (const std::exception & e) {
+        LOGE("%s", e.what());
+        throw_java(env, e.what());
+        return nullptr;
+    }
+}
+
+extern "C" JNIEXPORT jstring JNICALL
+Java_dev_chinmay_llamacppgemma_LlamaBridge_benchmark(
+    JNIEnv * env,
+    jobject,
+    jstring prompt,
+    jint max_tokens,
+    jfloat temperature
+) {
+    std::lock_guard<std::mutex> lock(g_engine.mutex);
+
+    try {
+        if (!g_engine.model || !g_engine.ctx) {
+            throw std::runtime_error("Model is not loaded");
+        }
+
+        llama_free(g_engine.ctx);
+        g_engine.ctx = llama_init_from_model(g_engine.model, g_engine.ctx_params);
+        if (!g_engine.ctx) {
+            throw std::runtime_error("Failed to reset llama context for benchmark");
+        }
+
+        if (g_engine.sampler) {
+            llama_sampler_free(g_engine.sampler);
+        }
+        llama_sampler_chain_params sampler_params = llama_sampler_chain_default_params();
+        g_engine.sampler = llama_sampler_chain_init(sampler_params);
+        llama_sampler_chain_add(g_engine.sampler, llama_sampler_init_temp(std::max(0.0f, static_cast<float>(temperature))));
+        llama_sampler_chain_add(g_engine.sampler, llama_sampler_init_dist(LLAMA_DEFAULT_SEED));
+
+        const llama_vocab * vocab = llama_model_get_vocab(g_engine.model);
+        std::vector<llama_token> tokens = tokenize(vocab, jstring_to_string(env, prompt));
+
+        auto started = std::chrono::steady_clock::now();
+
+        llama_batch batch = llama_batch_get_one(tokens.data(), static_cast<int32_t>(tokens.size()));
+        if (llama_decode(g_engine.ctx, batch) != 0) {
+            throw std::runtime_error("Benchmark prompt decode failed");
+        }
+
+        int generated = 0;
+        const int limit = std::max(1, static_cast<int>(max_tokens));
+
+        for (int i = 0; i < limit; ++i) {
+            llama_token next = llama_sampler_sample(g_engine.sampler, g_engine.ctx, -1);
+            if (llama_vocab_is_eog(vocab, next)) {
+                break;
+            }
+
+            llama_sampler_accept(g_engine.sampler, next);
+            generated += 1;
+
+            llama_batch next_batch = llama_batch_get_one(&next, 1);
+            if (llama_decode(g_engine.ctx, next_batch) != 0) {
+                break;
+            }
+        }
+
+        auto finished = std::chrono::steady_clock::now();
+        const auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(finished - started).count();
+        const long long safe_elapsed_ms = std::max<long long>(1, static_cast<long long>(elapsed_ms));
+        const std::string result =
+            "backend=" + g_engine.loaded_backend +
+            ";prompt_tokens=" + std::to_string(tokens.size()) +
+            ";generated_tokens=" + std::to_string(generated) +
+            ";elapsed_ms=" + std::to_string(safe_elapsed_ms);
+
+        LOGI("Benchmark %s", result.c_str());
+        return string_to_jstring(env, result);
     } catch (const std::exception & e) {
         LOGE("%s", e.what());
         throw_java(env, e.what());
