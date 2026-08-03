@@ -6,6 +6,7 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 set(LLAMA_CPP_DIR "" CACHE PATH "Path to llama.cpp checkout")
+set(SPIRV_HEADERS_INCLUDE_DIR "" CACHE PATH "Path to SPIR-V Headers include directory")
 set(VULKAN_HEADERS_INCLUDE_DIR "" CACHE PATH "Path to Vulkan-Headers include directory")
 
 if(NOT EXISTS "${LLAMA_CPP_DIR}/CMakeLists.txt")
@@ -23,6 +24,10 @@ if(GGML_VULKAN AND VULKAN_HEADERS_INCLUDE_DIR AND TARGET ggml-vulkan)
     target_include_directories(ggml-vulkan PRIVATE "${VULKAN_HEADERS_INCLUDE_DIR}")
 endif()
 
+if(GGML_VULKAN AND SPIRV_HEADERS_INCLUDE_DIR AND TARGET ggml-vulkan)
+    target_include_directories(ggml-vulkan PRIVATE "${SPIRV_HEADERS_INCLUDE_DIR}")
+endif()
+
 add_library(llamacpp_jni SHARED llama_jni.cpp)
 
 if(GGML_VULKAN)
@@ -36,6 +41,10 @@ target_include_directories(llamacpp_jni PRIVATE
 
 if(GGML_VULKAN AND VULKAN_HEADERS_INCLUDE_DIR)
     target_include_directories(llamacpp_jni PRIVATE "${VULKAN_HEADERS_INCLUDE_DIR}")
+endif()
+
+if(GGML_VULKAN AND SPIRV_HEADERS_INCLUDE_DIR)
+    target_include_directories(llamacpp_jni PRIVATE "${SPIRV_HEADERS_INCLUDE_DIR}")
 endif()
 
 target_link_libraries(llamacpp_jni
