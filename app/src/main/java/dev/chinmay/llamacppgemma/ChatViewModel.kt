@@ -27,6 +27,8 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 settings = it.settings.copy(
                     backend = backend,
                     gpuLayers = backend.defaultGpuLayers,
+                    contextSize = backend.defaultContextSize,
+                    threads = backend.defaultThreads,
                 ),
             )
         }
@@ -34,6 +36,10 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
 
     fun setGpuLayers(value: Int) {
         _state.update { it.copy(settings = it.settings.copy(gpuLayers = value.coerceIn(0, 999))) }
+    }
+
+    fun dismissError() {
+        _state.update { it.copy(error = null) }
     }
 
     fun selectModel(uri: Uri) {
@@ -50,6 +56,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                         modelPath = model.absolutePath,
                         modelName = model.name,
                         loadedBackend = null,
+                        benchmark = null,
                         isBusy = false,
                     )
                 }
@@ -82,6 +89,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 _state.update {
                     it.copy(
                         loadedBackend = backend,
+                        benchmark = null,
                         isBusy = false,
                         messages = it.messages + ChatMessage(
                             ChatMessage.Role.System,
@@ -91,6 +99,42 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 }
             }.onFailure { e ->
                 _state.update { it.copy(isBusy = false, error = e.message ?: "Unable to load model") }
+            }
+        }
+    }
+
+    fun benchmark() {
+        val current = _state.value
+        if (current.loadedBackend == null) {
+            _state.update { it.copy(error = "Load the model before running benchmark") }
+            return
+        }
+
+        viewModelScope.launch {
+            _state.update { it.copy(isBusy = true, error = null, benchmark = null) }
+            runCatching {
+                withContext(Dispatchers.Default) {
+                    LlamaBridge.benchmark(
+                        prompt = BENCHMARK_PROMPT,
+                        maxTokens = 64,
+                        temperature = 0.0f,
+                    )
+                }
+            }.mapCatching { raw ->
+                parseBenchmark(raw, current.loadedBackend.orEmpty())
+            }.onSuccess { result ->
+                _state.update {
+                    it.copy(
+                        isBusy = false,
+                        benchmark = result,
+                        messages = it.messages + ChatMessage(
+                            ChatMessage.Role.System,
+                            "Benchmark: ${"%.2f".format(result.tokensPerSecond)} tok/s (${result.generatedTokens} tokens in ${result.elapsedMs} ms)",
+                        ),
+                    )
+                }
+            }.onFailure { e ->
+                _state.update { it.copy(isBusy = false, error = e.message ?: "Benchmark failed") }
             }
         }
     }
@@ -181,5 +225,30 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             <end_of_turn>
             <start_of_turn>model
         """.trimIndent()
+    }
+
+    private fun parseBenchmark(raw: String, fallbackBackend: String): BenchmarkResult {
+        val values = raw.split(';')
+            .mapNotNull { part ->
+                val pieces = part.split('=', limit = 2)
+                if (pieces.size == 2) pieces[0] to pieces[1] else null
+            }
+            .toMap()
+
+        return BenchmarkResult(
+            backend = values["backend"].orEmpty().ifBlank { fallbackBackend },
+            promptTokens = values["prompt_tokens"]?.toIntOrNull() ?: 0,
+            generatedTokens = values["generated_tokens"]?.toIntOrNull() ?: 0,
+            elapsedMs = values["elapsed_ms"]?.toLongOrNull() ?: 0L,
+        )
+    }
+
+    private companion object {
+        const val BENCHMARK_PROMPT = """
+            <start_of_turn>user
+            Give a concise checklist for running a small language model locally on Android.
+            <end_of_turn>
+            <start_of_turn>model
+        """
     }
 }
