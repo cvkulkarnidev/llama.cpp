@@ -59,9 +59,19 @@ android {
         compose = true
     }
 
+    signingConfigs {
+        create("developmentRelease") {
+            storeFile = file("dev-signing.p12")
+            storePassword = "llamacpp-dev"
+            keyAlias = "llamacpp-dev"
+            keyPassword = "llamacpp-dev"
+            storeType = "PKCS12"
+        }
+    }
+
     buildTypes {
         release {
-            signingConfig = signingConfigs.getByName("debug")
+            signingConfig = signingConfigs.getByName("developmentRelease")
             isDebuggable = false
             isMinifyEnabled = false
         }

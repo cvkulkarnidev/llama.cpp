@@ -87,6 +87,10 @@ Every push to `main` runs the `Android APK` workflow and uploads
 `llamacpp-gemma-release-apk`. This is the easiest reproducible Vulkan build because the workflow
 installs `glslc`, Vulkan headers, and SPIR-V headers before compiling.
 
+Release APKs use the checked-in `app/dev-signing.p12` development key so successive CI builds can
+update the same sideloaded app without deleting its private model files. The key and its public
+password are intentionally reproducible and must not be used for a Play Store or production build.
+
 ### Local Android Studio
 
 1. Install Android Studio with JDK 17, SDK 35, NDK `27.2.12479018`, and CMake `3.22.1`.
