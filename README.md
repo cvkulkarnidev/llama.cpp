@@ -2,11 +2,11 @@
 
 Android Studio starter app for running **Gemma 4 E2B GGUF** locally through `llama.cpp`.
 
-The app is intentionally backend-pluggable:
+The app is configured for the Samsung S24 Exynos path:
 
 - CPU works on normal Android ARM64 builds.
-- GPU can work when `llama.cpp` is built with Vulkan or OpenCL support and the device driver is compatible.
-- NPU is experimental and mostly Snapdragon/QNN/Hexagon-specific. It is not a generic Android feature.
+- Vulkan GPU is enabled in the Android native build with `-DGGML_VULKAN=ON`.
+- NPU/QNN is not exposed for Exynos because it is mostly Snapdragon/QNN/Hexagon-specific.
 
 ## Best Existing Apps To Try First
 
@@ -29,10 +29,16 @@ llama-cli -hf ggml-org/gemma-4-E2B-it-GGUF --prompt "Hello"
 
 For the Android app, download a `.gguf` file manually and select it inside the app. The app copies it into private app storage because native `llama.cpp` needs a normal filesystem path.
 
-Recommended first test:
+Recommended first test on S24 Exynos:
 
 - `Q4_K_M` or `Q4_0` for RAM and speed.
-- Increase quality later if the phone has enough memory.
+- Backend: `Vulkan GPU`
+- GPU layers: `99`
+- Context size: `2048`
+- Threads: `4`
+- Increase quality or context later if the phone stays stable.
+
+The app includes a **Benchmark** button after the model is loaded. It runs a fixed 64-token native benchmark and reports generated tokens per second, generated token count, elapsed time, and backend label.
 
 ## Prepare llama.cpp
 
@@ -59,29 +65,23 @@ Use Android Studio, or run `./gradlew :app:assembleDebug` after generating the w
 
 ## Vulkan GPU Build
 
-Enable Vulkan in `app/build.gradle.kts`:
+Vulkan is already enabled in `app/build.gradle.kts`:
 
 ```kotlin
-arguments += listOf("-DGGML_VULKAN=ON")
+arguments += listOf(
+    "-DGGML_VULKAN=ON",
+    "-DGGML_OPENMP=OFF",
+    "-DGGML_OPENCL=OFF",
+)
 ```
 
-Then in the app choose `Vulkan GPU` and keep `GPU layers` high, for example `99`.
-
-## Qualcomm Adreno OpenCL GPU Build
-
-Enable OpenCL:
-
-```kotlin
-arguments += listOf("-DGGML_OPENCL=ON")
-```
-
-OpenCL in llama.cpp targets Qualcomm Adreno first. It is verified only on newer Snapdragon/Adreno combinations, so older phones may still fall back or perform poorly.
+In the app choose `Vulkan GPU` and keep `GPU layers` high, for example `99`.
 
 ## Snapdragon NPU / QNN
 
 For NPU, do not expect a generic switch to work on every phone. You need a llama.cpp build that includes QNN/Hexagon support and the required Qualcomm runtime files for the target device.
 
-This app exposes an `Experimental QNN/NPU` backend option, but the native library must actually be built with that backend. Treat it as a build flavor we can wire after confirming your exact phone SoC.
+This Exynos build does not expose an `Experimental QNN/NPU` backend option. Treat NPU as a separate Snapdragon-specific build flavor, not the default Android path.
 
 ## Android Notes
 
@@ -90,14 +90,16 @@ This app exposes an `Experimental QNN/NPU` backend option, but the native librar
 - ABI: `arm64-v8a`
 - UI: Jetpack Compose + Material 3
 - Architecture: simple MVVM with `StateFlow`
+- Runtime errors are shown in a popup dialog. Hard native crashes such as process-level Vulkan driver aborts or out-of-memory kills can still terminate the app before Kotlin can display an error.
+- The settings section is collapsed by default. Tap **Show settings** to change backend or GPU layers.
 
 ## Practical Recommendation
 
 For your current goal, I would test in this order:
 
-1. CPU with `Q4_K_M`.
-2. Vulkan GPU.
-3. OpenCL if the phone has Snapdragon/Adreno.
-4. QNN/NPU only if the device is Snapdragon and you are ready to include Qualcomm SDK/runtime setup.
+1. Vulkan GPU with `Q4_K_M`, `gpuLayers=99`, `contextSize=2048`, and `threads=4`.
+2. If Vulkan crashes or falls back, reduce `gpuLayers` to `48`, then `32`, then `16`.
+3. If memory is still unstable, reduce context size to `1024`.
+4. CPU is the fallback path only.
 
 If your phone is Samsung Galaxy S24 India/Exynos, QNN/NPU is not the right path. Vulkan is the realistic llama.cpp acceleration path; LiteRT/MediaPipe may still use GPU better than llama.cpp for some models.
