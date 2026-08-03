@@ -31,6 +31,12 @@ endif()
 
 add_library(llamacpp_jni SHARED llama_jni.cpp)
 
+# CMake 3.22's Android integration appends gold after global linker flags. Keep
+# lld as the final linker selection because ThinLTO bitcode requires LLVM lld.
+if(ANDROID AND CMAKE_INTERPROCEDURAL_OPTIMIZATION)
+    target_link_options(llamacpp_jni PRIVATE "-fuse-ld=lld")
+endif()
+
 set(LLAMACPP_GEMMA_NATIVE_BUILD_TYPE "${CMAKE_BUILD_TYPE}")
 if(NOT LLAMACPP_GEMMA_NATIVE_BUILD_TYPE)
     set(LLAMACPP_GEMMA_NATIVE_BUILD_TYPE "Unknown")
