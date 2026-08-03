@@ -328,7 +328,7 @@ InferenceResult run_inference(
 
     const auto generation_started = prompt_finished;
     for (int i = 0; i < limit; ++i) {
-        const llama_token next = llama_sampler_sample(g_engine.sampler, g_engine.ctx, -1);
+        llama_token next = llama_sampler_sample(g_engine.sampler, g_engine.ctx, -1);
         if (llama_vocab_is_eog(vocab, next)) {
             break;
         }
