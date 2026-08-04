@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cctype>
 #include <chrono>
+#include <cmath>
 #include <cstddef>
 #include <functional>
 #include <iomanip>
@@ -306,6 +307,99 @@ const char * nn_device_type_name(int32_t type) {
     }
 }
 
+std::string run_nnapi_add_probe(ANeuralNetworksDevice * device) {
+    ANeuralNetworksModel * model = nullptr;
+    ANeuralNetworksCompilation * compilation = nullptr;
+    ANeuralNetworksExecution * execution = nullptr;
+    int status = ANEURALNETWORKS_NO_ERROR;
+    std::string stage = "create model";
+
+    const uint32_t dimensions[] = {4};
+    const ANeuralNetworksOperandType tensor_type = {
+        ANEURALNETWORKS_TENSOR_FLOAT32, 1, dimensions, 0.0f, 0
+    };
+    const ANeuralNetworksOperandType activation_type = {
+        ANEURALNETWORKS_INT32, 0, nullptr, 0.0f, 0
+    };
+    const int32_t activation = ANEURALNETWORKS_FUSED_NONE;
+    const uint32_t add_inputs[] = {0, 1, 2};
+    const uint32_t model_inputs[] = {0, 1};
+    const uint32_t model_outputs[] = {3};
+    const ANeuralNetworksDevice * selected_devices[] = {device};
+    const float lhs[] = {1.0f, 2.0f, 3.0f, 4.0f};
+    const float rhs[] = {5.0f, 6.0f, 7.0f, 8.0f};
+    float output[] = {0.0f, 0.0f, 0.0f, 0.0f};
+
+    status = ANeuralNetworksModel_create(&model);
+    if (status == ANEURALNETWORKS_NO_ERROR) {
+        stage = "add operands";
+        status = ANeuralNetworksModel_addOperand(model, &tensor_type);
+    }
+    if (status == ANEURALNETWORKS_NO_ERROR) status = ANeuralNetworksModel_addOperand(model, &tensor_type);
+    if (status == ANEURALNETWORKS_NO_ERROR) status = ANeuralNetworksModel_addOperand(model, &activation_type);
+    if (status == ANEURALNETWORKS_NO_ERROR) status = ANeuralNetworksModel_addOperand(model, &tensor_type);
+    if (status == ANEURALNETWORKS_NO_ERROR) {
+        stage = "set activation";
+        status = ANeuralNetworksModel_setOperandValue(model, 2, &activation, sizeof(activation));
+    }
+    if (status == ANEURALNETWORKS_NO_ERROR) {
+        stage = "add operation";
+        status = ANeuralNetworksModel_addOperation(model, ANEURALNETWORKS_ADD, 3, add_inputs, 1, model_outputs);
+    }
+    if (status == ANEURALNETWORKS_NO_ERROR) {
+        stage = "identify inputs/outputs";
+        status = ANeuralNetworksModel_identifyInputsAndOutputs(model, 2, model_inputs, 1, model_outputs);
+    }
+    if (status == ANEURALNETWORKS_NO_ERROR) {
+        stage = "finish model";
+        status = ANeuralNetworksModel_finish(model);
+    }
+    if (status == ANEURALNETWORKS_NO_ERROR) {
+        stage = "create ENN compilation";
+        status = ANeuralNetworksCompilation_createForDevices(model, selected_devices, 1, &compilation);
+    }
+    if (status == ANEURALNETWORKS_NO_ERROR) {
+        ANeuralNetworksCompilation_setPreference(compilation, ANEURALNETWORKS_PREFER_SUSTAINED_SPEED);
+        stage = "finish ENN compilation";
+        status = ANeuralNetworksCompilation_finish(compilation);
+    }
+    if (status == ANEURALNETWORKS_NO_ERROR) {
+        stage = "create execution";
+        status = ANeuralNetworksExecution_create(compilation, &execution);
+    }
+    if (status == ANEURALNETWORKS_NO_ERROR) {
+        stage = "bind input 0";
+        status = ANeuralNetworksExecution_setInput(execution, 0, nullptr, lhs, sizeof(lhs));
+    }
+    if (status == ANEURALNETWORKS_NO_ERROR) {
+        stage = "bind input 1";
+        status = ANeuralNetworksExecution_setInput(execution, 1, nullptr, rhs, sizeof(rhs));
+    }
+    if (status == ANEURALNETWORKS_NO_ERROR) {
+        stage = "bind output";
+        status = ANeuralNetworksExecution_setOutput(execution, 0, nullptr, output, sizeof(output));
+    }
+    if (status == ANEURALNETWORKS_NO_ERROR) {
+        stage = "execute ADD";
+        status = ANeuralNetworksExecution_compute(execution);
+    }
+
+    if (execution) ANeuralNetworksExecution_free(execution);
+    if (compilation) ANeuralNetworksCompilation_free(compilation);
+    if (model) ANeuralNetworksModel_free(model);
+
+    if (status != ANEURALNETWORKS_NO_ERROR) {
+        return "NNAPI ADD probe failed at " + stage + " (code " + std::to_string(status) + ")";
+    }
+    const float expected[] = {6.0f, 8.0f, 10.0f, 12.0f};
+    for (size_t i = 0; i < 4; ++i) {
+        if (std::fabs(output[i] - expected[i]) > 0.001f) {
+            return "NNAPI ADD probe returned incorrect output";
+        }
+    }
+    return "NNAPI ADD probe passed on this device";
+}
+
 std::string accelerator_inventory() {
     uint32_t count = 0;
     const int count_status = ANeuralNetworks_getDeviceCount(&count);
@@ -334,6 +428,7 @@ std::string accelerator_inventory() {
         devices += nn_device_type_name(type);
         devices += ", feature level " + std::to_string(feature_level);
         if (version && version[0]) devices += ", driver " + std::string(version);
+        devices += ", " + run_nnapi_add_probe(device);
         devices += ")";
     }
     return devices.empty() ? "No non-CPU NNAPI accelerator advertised" : devices;
