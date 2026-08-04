@@ -748,6 +748,7 @@ Java_dev_chinmay_llamacppgemma_LlamaBridge_loadModel(
         g_engine.requested_context_size = std::max(512, static_cast<int>(context_size));
         g_engine.requested_threads = std::max(1, static_cast<int>(threads));
         append_diagnostic("app: native_build_type=" LLAMACPP_GEMMA_BUILD_TYPE "\n");
+        append_diagnostic("app: native_optimization=" LLAMACPP_GEMMA_OPTIMIZATION "\n");
         append_diagnostic("app: llama_cpp_revision=" LLAMACPP_GEMMA_LLAMA_REVISION "\n");
         append_diagnostic("app: backend_request=" + backend_name +
             " gpu_layers_requested=" + std::to_string(g_engine.requested_gpu_layers) +
@@ -971,7 +972,7 @@ Java_dev_chinmay_llamacppgemma_LlamaBridge_benchmark(
         const long long total_ms = inference.prompt_eval_ms + inference.generation_ms;
         const std::string result =
             "backend=" + g_engine.loaded_backend +
-            ";build_type=" LLAMACPP_GEMMA_BUILD_TYPE +
+            ";build_type=" LLAMACPP_GEMMA_BUILD_TYPE "-" LLAMACPP_GEMMA_OPTIMIZATION +
             ";gpu_layers_requested=" + std::to_string(g_engine.requested_gpu_layers) +
             ";context_size=" + std::to_string(g_engine.requested_context_size) +
             ";threads=" + std::to_string(g_engine.requested_threads) +

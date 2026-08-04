@@ -19,6 +19,12 @@ set(LLAMA_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
 set(LLAMA_BUILD_SERVER OFF CACHE BOOL "" FORCE)
 set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
 
+# Android Gradle configures release native builds as RelWithDebInfo. Keep that
+# build mode for AGP compatibility but use Release optimization flags for all
+# llama.cpp/ggml targets; symbols are not packaged in the release APK.
+set(CMAKE_C_FLAGS_RELWITHDEBINFO "-O3 -DNDEBUG" CACHE STRING "" FORCE)
+set(CMAKE_CXX_FLAGS_RELWITHDEBINFO "-O3 -DNDEBUG" CACHE STRING "" FORCE)
+
 add_subdirectory("${LLAMA_CPP_DIR}" "${CMAKE_BINARY_DIR}/llama.cpp")
 
 if(GGML_VULKAN AND VULKAN_HEADERS_INCLUDE_DIR AND TARGET ggml-vulkan)
@@ -39,6 +45,7 @@ target_compile_definitions(
     llamacpp_jni
     PRIVATE
     "LLAMACPP_GEMMA_BUILD_TYPE=\"${LLAMACPP_GEMMA_NATIVE_BUILD_TYPE}\""
+    "LLAMACPP_GEMMA_OPTIMIZATION=\"O3\""
     "LLAMACPP_GEMMA_LLAMA_REVISION=\"${LLAMA_CPP_REVISION}\""
 )
 

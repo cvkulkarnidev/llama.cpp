@@ -309,6 +309,28 @@ private fun SettingsScreen(
                     valueRange = if (state.settings.backend == LlamaBackend.Vulkan) 1f..99f else 0f..99f,
                     steps = if (state.settings.backend == LlamaBackend.Vulkan) 97 else 98,
                 )
+                if (state.settings.backend == LlamaBackend.Vulkan) {
+                    Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                        TextButton(
+                            enabled = !state.isBusy,
+                            onClick = { actions.onGpuLayers(1) },
+                        ) { Text("1 Decode") }
+                        TextButton(
+                            enabled = !state.isBusy,
+                            onClick = { actions.onGpuLayers(42) },
+                        ) { Text("42 Balanced") }
+                        TextButton(
+                            enabled = !state.isBusy,
+                            onClick = { actions.onGpuLayers(99) },
+                        ) { Text("99 Prefill") }
+                    }
+                    Text(
+                        "S24 measurements: 42 layers had the best 64-token total latency; " +
+                            "1 layer had the fastest warmed decode; 99 layers had the fastest prompt evaluation.",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
 
                 Text(
                     state.loadedBackend?.let { "Active: $it" } ?: "Load the model to verify placement",
