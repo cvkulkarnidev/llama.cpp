@@ -138,7 +138,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                         nativeDiagnostics = LlamaBridge.diagnostics(),
                         messages = it.messages + ChatMessage(
                             ChatMessage.Role.System,
-                            "Benchmark: ${"%.2f".format(result.tokensPerSecond)} tok/s (${result.buildType}, ${result.generatedTokens} tokens in ${result.elapsedMs} ms)",
+                            "Benchmark: ${"%.2f".format(result.tokensPerSecond)} tok/s, offload=${if (result.gpuOffloadDetected) "yes" else "no"} (${result.buildType}, ${result.generatedTokens} tokens in ${result.elapsedMs} ms)",
                         ),
                     )
                 }
@@ -256,6 +256,10 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             gpuLayersRequested = values["gpu_layers_requested"]?.toIntOrNull() ?: 0,
             contextSize = values["context_size"]?.toIntOrNull() ?: 0,
             threads = values["threads"]?.toIntOrNull() ?: 0,
+            acceleratedDeviceCount = values["accelerated_device_count"]?.toIntOrNull() ?: 0,
+            acceleratedDevices = values["accelerated_devices"].orEmpty(),
+            gpuOffloadDetected = values["gpu_offload_detected"]?.toBooleanStrictOrNull() ?: false,
+            offloadedLayers = values["offloaded_layers"]?.toIntOrNull() ?: 0,
             promptTokens = values["prompt_tokens"]?.toIntOrNull() ?: 0,
             generatedTokens = values["generated_tokens"]?.toIntOrNull() ?: 0,
             elapsedMs = values["elapsed_ms"]?.toLongOrNull() ?: 0L,
