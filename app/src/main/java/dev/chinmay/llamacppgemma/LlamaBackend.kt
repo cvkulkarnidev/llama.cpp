@@ -8,5 +8,5 @@ enum class LlamaBackend(
     val defaultThreads: Int,
 ) {
     Cpu("CPU safe mode", "cpu", 0, 1024, 4),
-    Vulkan("Vulkan GPU", "vulkan", 42, 2048, 4),
+    Vulkan("Vulkan GPU", "vulkan", 99, 2048, 4),
 }

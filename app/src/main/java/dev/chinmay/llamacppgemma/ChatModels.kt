@@ -29,7 +29,7 @@ data class GenerationMetrics(
 
 data class InferenceSettings(
     val backend: LlamaBackend = LlamaBackend.Vulkan,
-    val gpuLayers: Int = 42,
+    val gpuLayers: Int = 99,
     val contextSize: Int = 2048,
     val threads: Int = 4,
     val maxTokens: Int = 256,

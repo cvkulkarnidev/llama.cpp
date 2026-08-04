@@ -2,6 +2,7 @@ package dev.chinmay.llamacppgemma
 
 import android.app.Application
 import android.net.Uri
+import android.os.Build
 import android.provider.OpenableColumns
 import android.util.Log
 import androidx.lifecycle.AndroidViewModel
@@ -15,7 +16,17 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 class ChatViewModel(application: Application) : AndroidViewModel(application) {
-    private val _state = MutableStateFlow(ChatUiState())
+    private val deviceDefaultGpuLayers = if (
+        Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
+        Build.SOC_MODEL.equals(EXYNOS_2400_SOC, ignoreCase = true)
+    ) {
+        42
+    } else {
+        LlamaBackend.Vulkan.defaultGpuLayers
+    }
+    private val _state = MutableStateFlow(
+        ChatUiState(settings = InferenceSettings(gpuLayers = deviceDefaultGpuLayers)),
+    )
     val state: StateFlow<ChatUiState> = _state
     private var nextNoticeId = 0L
 
@@ -25,7 +36,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 withContext(Dispatchers.IO) { LlamaBridge.acceleratorDevices() }
             }.fold(
                 onSuccess = { inventory ->
-                    "$inventory. Samsung ENN/NNAPI cannot execute GGUF through this llama.cpp build."
+                    "$inventory. NNAPI accelerators cannot execute GGUF through this llama.cpp build."
                 },
                 onFailure = { error -> "Accelerator probe failed: ${error.message}" },
             )
@@ -63,7 +74,11 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             it.copy(
                 settings = it.settings.copy(
                     backend = backend,
-                    gpuLayers = backend.defaultGpuLayers,
+                    gpuLayers = if (backend == LlamaBackend.Vulkan) {
+                        deviceDefaultGpuLayers
+                    } else {
+                        backend.defaultGpuLayers
+                    },
                     contextSize = backend.defaultContextSize,
                     threads = backend.defaultThreads,
                 ),
@@ -440,6 +455,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
 
     private companion object {
         const val LOG_TAG = "LlamaCppGemma"
+        const val EXYNOS_2400_SOC = "s5e9945"
         const val MODEL_COPY_BUFFER_BYTES = 1024 * 1024
         const val BENCHMARK_PROMPT =
             "Give a concise checklist for running a small language model locally on Android."
