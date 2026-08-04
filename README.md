@@ -38,7 +38,7 @@ Recommended first test on S24 Exynos:
 - Threads: `4`
 - Increase quality or context later if the phone stays stable.
 
-The app includes a **Benchmark** button after the model is loaded. It runs a fixed 64-token native benchmark and reports generated tokens per second, generated token count, elapsed time, and backend label.
+The app includes a **Benchmark** button after the model is loaded. It runs a fixed 64-token native benchmark and reports generated tokens per second, generated token count, elapsed time, backend label, registered GPU/IGPU devices, and whether llama.cpp reported GPU layer offload.
 
 For speed testing, use the **release APK** from GitHub Actions. The release build compiles native llama.cpp with `CMAKE_BUILD_TYPE=Release`; the earlier debug APK used `Debug`, which can be much slower. The release variant is signed with the debug signing key so it can be installed directly for local testing.
 
@@ -47,7 +47,11 @@ Tap **Show settings** after loading a model to see native diagnostics. The diagn
 - native build type: `Release` or `Debug`
 - backend request
 - requested GPU layers, context size, and threads
+- registered llama.cpp backend devices, including `GPU` and mobile `IGPU`
+- `gpu_offload_detected` and `offloaded_layers`
 - llama.cpp native logs, including Vulkan/offload messages when llama.cpp emits them
+
+If you choose `Vulkan GPU` with GPU layers above `0`, the app now blocks silent CPU fallback. It will show a runtime popup when no GPU/IGPU backend device is registered, or when llama.cpp loads the model without reporting GPU layer offload.
 
 ## Prepare llama.cpp
 
