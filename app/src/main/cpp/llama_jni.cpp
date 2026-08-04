@@ -3,11 +3,13 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cctype>
 #include <mutex>
 #include <stdexcept>
 #include <string>
 #include <vector>
 
+#include "ggml-backend.h"
 #include "llama.h"
 
 #define LOG_TAG "LlamaCppGemma"
@@ -26,9 +28,13 @@ struct Engine {
     bool backend_initialized = false;
     std::string loaded_backend = "CPU";
     std::string diagnostics;
+    std::string accelerated_devices;
     int requested_gpu_layers = 0;
     int requested_context_size = 0;
     int requested_threads = 0;
+    int accelerated_device_count = 0;
+    int offloaded_layers = 0;
+    bool gpu_offload_detected = false;
 };
 
 Engine g_engine;
@@ -73,6 +79,94 @@ void llama_log_callback(enum ggml_log_level, const char * text, void *) {
     if (text) {
         append_diagnostic(text);
     }
+}
+
+const char * device_type_name(enum ggml_backend_dev_type type) {
+    switch (type) {
+        case GGML_BACKEND_DEVICE_TYPE_CPU: return "CPU";
+        case GGML_BACKEND_DEVICE_TYPE_GPU: return "GPU";
+        case GGML_BACKEND_DEVICE_TYPE_IGPU: return "IGPU";
+        case GGML_BACKEND_DEVICE_TYPE_ACCEL: return "ACCEL";
+        case GGML_BACKEND_DEVICE_TYPE_META: return "META";
+    }
+    return "UNKNOWN";
+}
+
+bool is_accelerated_device(enum ggml_backend_dev_type type) {
+    return type == GGML_BACKEND_DEVICE_TYPE_GPU || type == GGML_BACKEND_DEVICE_TYPE_IGPU;
+}
+
+std::string sanitize_field(std::string value) {
+    std::replace(value.begin(), value.end(), ';', ',');
+    std::replace(value.begin(), value.end(), '\n', ' ');
+    return value;
+}
+
+int parse_offloaded_layers(const std::string & text) {
+    int best = 0;
+    size_t search_from = 0;
+    const std::string marker = "offloaded ";
+
+    while (true) {
+        const size_t marker_pos = text.find(marker, search_from);
+        if (marker_pos == std::string::npos) break;
+
+        size_t digit_pos = marker_pos + marker.size();
+        while (digit_pos < text.size() && !std::isdigit(static_cast<unsigned char>(text[digit_pos]))) {
+            digit_pos++;
+        }
+
+        int parsed = 0;
+        while (digit_pos < text.size() && std::isdigit(static_cast<unsigned char>(text[digit_pos]))) {
+            parsed = parsed * 10 + (text[digit_pos] - '0');
+            digit_pos++;
+        }
+
+        best = std::max(best, parsed);
+        search_from = digit_pos;
+    }
+
+    return best;
+}
+
+void refresh_backend_devices() {
+    g_engine.accelerated_device_count = 0;
+    g_engine.accelerated_devices.clear();
+
+    append_diagnostic("app: backend_registry_count=" + std::to_string(ggml_backend_reg_count()) + "\n");
+
+    const size_t device_count = ggml_backend_dev_count();
+    append_diagnostic("app: backend_device_count=" + std::to_string(device_count) + "\n");
+
+    for (size_t i = 0; i < device_count; ++i) {
+        ggml_backend_dev_t device = ggml_backend_dev_get(i);
+        const auto type = ggml_backend_dev_type(device);
+        const char * name = ggml_backend_dev_name(device);
+        const char * description = ggml_backend_dev_description(device);
+
+        std::string label = name && name[0] ? name : "unknown";
+        if (description && description[0]) {
+            label += " (";
+            label += description;
+            label += ")";
+        }
+
+        append_diagnostic(
+            "app: backend_device[" + std::to_string(i) + "]=" + label +
+            " type=" + device_type_name(type) + "\n"
+        );
+
+        if (is_accelerated_device(type)) {
+            if (!g_engine.accelerated_devices.empty()) {
+                g_engine.accelerated_devices += ", ";
+            }
+            g_engine.accelerated_devices += label + " [" + device_type_name(type) + "]";
+            g_engine.accelerated_device_count += 1;
+        }
+    }
+
+    append_diagnostic("app: llama_supports_gpu_offload=" +
+        std::string(llama_supports_gpu_offload() ? "true" : "false") + "\n");
 }
 
 void unload_locked() {
@@ -171,8 +265,23 @@ Java_dev_chinmay_llamacppgemma_LlamaBridge_loadModel(
             " context_size=" + std::to_string(g_engine.requested_context_size) +
             " threads=" + std::to_string(g_engine.requested_threads) + "\n");
 
+        refresh_backend_devices();
+
+        const bool wants_vulkan = backend_name == "vulkan" && g_engine.requested_gpu_layers > 0;
+#ifndef LLAMACPP_GEMMA_VULKAN_ENABLED
+        if (wants_vulkan) {
+            throw std::runtime_error("Vulkan was requested, but this APK was not compiled with GGML_VULKAN.");
+        }
+#endif
+        if (wants_vulkan && g_engine.accelerated_device_count <= 0) {
+            throw std::runtime_error(
+                "Vulkan was requested, but llama.cpp did not register a GPU/IGPU device. "
+                "This APK would run CPU-only on this device."
+            );
+        }
+
         llama_model_params model_params = llama_model_default_params();
-        model_params.n_gpu_layers = g_engine.requested_gpu_layers;
+        model_params.n_gpu_layers = wants_vulkan ? g_engine.requested_gpu_layers : 0;
 
         g_engine.ctx_params = llama_context_default_params();
         g_engine.ctx_params.n_ctx = static_cast<uint32_t>(g_engine.requested_context_size);
@@ -194,11 +303,25 @@ Java_dev_chinmay_llamacppgemma_LlamaBridge_loadModel(
         llama_sampler_chain_add(g_engine.sampler, llama_sampler_init_temp(0.7f));
         llama_sampler_chain_add(g_engine.sampler, llama_sampler_init_dist(LLAMA_DEFAULT_SEED));
 
+        g_engine.offloaded_layers = parse_offloaded_layers(diagnostics_snapshot());
+        g_engine.gpu_offload_detected = wants_vulkan && g_engine.offloaded_layers > 0;
+        append_diagnostic("app: gpu_offload_detected=" +
+            std::string(g_engine.gpu_offload_detected ? "true" : "false") +
+            " offloaded_layers=" + std::to_string(g_engine.offloaded_layers) + "\n");
+
         if (backend_name == "cpu" || gpu_layers <= 0) {
             g_engine.loaded_backend = "CPU";
         } else if (backend_name == "vulkan") {
 #ifdef LLAMACPP_GEMMA_VULKAN_ENABLED
-            g_engine.loaded_backend = "Vulkan GPU requested";
+            if (g_engine.gpu_offload_detected) {
+                g_engine.loaded_backend = "Vulkan GPU active";
+            } else {
+                g_engine.loaded_backend = "Vulkan available - offload not confirmed";
+                throw std::runtime_error(
+                    "Vulkan was requested, but llama.cpp did not report any GPU layer offload. "
+                    "This run was blocked to avoid silent CPU fallback."
+                );
+            }
 #else
             g_engine.loaded_backend = "CPU - Vulkan not compiled into this APK";
 #endif
@@ -345,6 +468,10 @@ Java_dev_chinmay_llamacppgemma_LlamaBridge_benchmark(
             ";gpu_layers_requested=" + std::to_string(g_engine.requested_gpu_layers) +
             ";context_size=" + std::to_string(g_engine.requested_context_size) +
             ";threads=" + std::to_string(g_engine.requested_threads) +
+            ";accelerated_device_count=" + std::to_string(g_engine.accelerated_device_count) +
+            ";accelerated_devices=" + sanitize_field(g_engine.accelerated_devices) +
+            ";gpu_offload_detected=" + std::string(g_engine.gpu_offload_detected ? "true" : "false") +
+            ";offloaded_layers=" + std::to_string(g_engine.offloaded_layers) +
             ";prompt_tokens=" + std::to_string(tokens.size()) +
             ";generated_tokens=" + std::to_string(generated) +
             ";elapsed_ms=" + std::to_string(safe_elapsed_ms);
