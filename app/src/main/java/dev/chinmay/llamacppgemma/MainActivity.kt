@@ -211,6 +211,22 @@ private fun ModelPanel(
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
+                        Text(
+                            "gpuDevices=${result.acceleratedDeviceCount}, offload=${if (result.gpuOffloadDetected) "yes" else "no"}, offloadedLayers=${result.offloadedLayers}",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = if (result.gpuOffloadDetected) {
+                                MaterialTheme.colorScheme.primary
+                            } else {
+                                MaterialTheme.colorScheme.error
+                            },
+                        )
+                        if (result.acceleratedDevices.isNotBlank()) {
+                            Text(
+                                result.acceleratedDevices,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
                     } ?: Text(
                         "S24 Exynos: use Vulkan first; CPU is safe fallback.",
                         style = MaterialTheme.typography.bodySmall,
