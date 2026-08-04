@@ -4,6 +4,8 @@ plugins {
     id("org.jetbrains.kotlin.plugin.compose")
 }
 
+val llamaCppRevision = rootProject.file("scripts/llama_cpp_revision.txt").readText().trim()
+
 android {
     namespace = "dev.chinmay.llamacppgemma"
     compileSdk = 35
@@ -13,8 +15,8 @@ android {
         applicationId = "dev.chinmay.llamacppgemma"
         minSdk = 29
         targetSdk = 35
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = 2
+        versionName = "0.2.0"
 
         ndk {
             abiFilters += listOf("arm64-v8a")
@@ -26,9 +28,12 @@ android {
                 val cmakeArguments = mutableListOf(
                     "-DANDROID_STL=c++_shared",
                     "-DLLAMA_CPP_DIR=${rootDir}/third_party/llama.cpp",
+                    "-DLLAMA_CPP_REVISION=$llamaCppRevision",
                     "-DGGML_VULKAN=ON",
                     "-DGGML_OPENMP=OFF",
                     "-DGGML_OPENCL=OFF",
+                    "-DGGML_LLAMAFILE=OFF",
+                    "-DGGML_CPU_ARM_ARCH=armv8.7-a",
                 )
                 System.getenv("SPIRV_HEADERS_DIR")?.takeIf { it.isNotBlank() }?.let {
                     cmakeArguments += "-DSPIRV-Headers_DIR=$it"
@@ -55,11 +60,30 @@ android {
         compose = true
     }
 
+    packaging {
+        jniLibs {
+            useLegacyPackaging = false
+        }
+    }
+
+    signingConfigs {
+        create("developmentRelease") {
+            storeFile = file("dev-signing.p12")
+            storePassword = "llamacpp-dev"
+            keyAlias = "llamacpp-dev"
+            keyPassword = "llamacpp-dev"
+            storeType = "PKCS12"
+        }
+    }
+
     buildTypes {
         release {
-            signingConfig = signingConfigs.getByName("debug")
+            signingConfig = signingConfigs.getByName("developmentRelease")
             isDebuggable = false
             isMinifyEnabled = false
+            ndk {
+                debugSymbolLevel = "none"
+            }
         }
     }
 }

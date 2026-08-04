@@ -1,114 +1,157 @@
 # LlamaCpp Gemma Android
 
-Android Studio starter app for running **Gemma 4 E2B GGUF** locally through `llama.cpp`.
+Native Android chat app for running instruction-tuned GGUF models locally with `llama.cpp`.
+The first device target is a Samsung Galaxy S24.
 
-The app is configured for the Samsung S24 Exynos path:
+## Current backend support
 
-- CPU works on normal Android ARM64 builds.
-- Vulkan GPU is enabled in the Android native build with `-DGGML_VULKAN=ON`.
-- NPU/QNN is not exposed for Exynos because it is mostly Snapdragon/QNN/Hexagon-specific.
+| Backend | This APK | Notes |
+| --- | --- | --- |
+| ARM64 CPU | Yes | Explicit CPU-only device selection; safe fallback. |
+| Vulkan GPU | Yes | Explicitly selects the Vulkan device and offloads the requested model layers. |
+| Qualcomm Hexagon NPU | No | Upstream support is experimental and needs a separate Snapdragon/Hexagon toolchain build. |
+| Exynos NPU | No | Upstream `llama.cpp` does not provide an Exynos NPU backend. |
 
-## Best Existing Apps To Try First
+The app now reports the selected Vulkan device, native build type, pinned llama.cpp revision,
+requested GPU layers, and upstream offload logs. A backend label is therefore evidence of an
+available selected device, rather than merely echoing the UI request.
 
-If you want something installable before building your own app, try:
+## Identify the S24 variant
 
-- **PocketPal AI**: GGUF/llama.cpp Android app.
-- **ChatterUI**: Android chat UI with local model support.
-- **SmolChat-Android**: lightweight llama.cpp Android app.
-- **Maid**: Flutter app for GGUF/llama.cpp models.
+Galaxy S24 hardware differs by market and revision. Once USB debugging is enabled and the phone
+is connected, run:
 
-Those are good references. This project is for your own Kotlin/Compose app where we can control backend flags, model path handling, and UI.
-
-## Model
-
-Use the official GGUF model:
-
-```bash
-llama-cli -hf ggml-org/gemma-4-E2B-it-GGUF --prompt "Hello"
+```powershell
+adb shell getprop ro.product.model
+adb shell getprop ro.soc.manufacturer
+adb shell getprop ro.soc.model
+adb shell getprop ro.hardware
 ```
 
-For the Android app, download a `.gguf` file manually and select it inside the app. The app copies it into private app storage because native `llama.cpp` needs a normal filesystem path.
+- Exynos 2400 devices have an Xclipse 940 GPU and a Samsung NPU. Use this app's Vulkan path;
+  the Samsung NPU is not exposed through a llama.cpp backend.
+- Snapdragon devices can also use Vulkan in this APK. A Hexagon NPU build should be a separate
+  product flavor because it requires the Qualcomm/Hexagon toolchain and additional runtime
+  libraries.
 
-Recommended first test on S24 Exynos:
+Upstream's current Snapdragon instructions are in
+[`docs/backend/snapdragon/README.md`](https://github.com/ggml-org/llama.cpp/blob/master/docs/backend/snapdragon/README.md).
 
-- `Q4_K_M` or `Q4_0` for RAM and speed.
+## Recommended first model
+
+Start with Google's instruction-tuned QAT Q4_0 GGUF:
+
+```text
+google/gemma-4-E2B-it-qat-q4_0-gguf
+```
+
+The app is text-only. Pick the main `.gguf` model file, not an `mmproj` or assistant/drafter file.
+The selected model is copied to app-private storage so native llama.cpp receives a normal file
+path. Keep several gigabytes of free storage available.
+
+Recommended first settings:
+
 - Backend: `Vulkan GPU`
 - GPU layers: `99`
-- Context size: `2048`
+- Context: `2048`
 - Threads: `4`
-- Increase quality or context later if the phone stays stable.
 
-The app includes a **Benchmark** button after the model is loaded. It runs a fixed 64-token native benchmark and reports generated tokens per second, generated token count, elapsed time, and backend label.
+If model loading is unstable, try GPU layers `48`, `32`, then `16`; next reduce context to `1024`.
+CPU mode is the compatibility fallback.
 
-For speed testing, use the **release APK** from GitHub Actions. The release build compiles native llama.cpp with `CMAKE_BUILD_TYPE=Release`; the earlier debug APK used `Debug`, which can be much slower. The release variant is signed with the debug signing key so it can be installed directly for local testing.
+## Reproducible dependency setup
 
-Tap **Show settings** after loading a model to see native diagnostics. The diagnostics include:
+The exact upstream llama.cpp Git revision is stored in
+[`scripts/llama_cpp_revision.txt`](scripts/llama_cpp_revision.txt). Fetch it with:
 
-- native build type: `Release` or `Debug`
-- backend request
-- requested GPU layers, context size, and threads
-- llama.cpp native logs, including Vulkan/offload messages when llama.cpp emits them
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\fetch_llama_cpp.ps1
+```
 
-## Prepare llama.cpp
-
-From the project root:
+On Linux/macOS or in GitHub Actions:
 
 ```bash
-git clone https://github.com/ggml-org/llama.cpp third_party/llama.cpp
+bash scripts/fetch_llama_cpp.sh
 ```
 
-Then open this folder in Android Studio and build the `app` module.
+Do not replace this with an unpinned `git pull`: llama.cpp's C API changes frequently.
 
-If you prefer command line builds, install Gradle 8.11.1 or generate a wrapper:
+## Build
 
-```bash
-gradle wrapper --gradle-version 8.11.1
-./gradlew :app:assembleRelease
+The project uses JDK 17, Android SDK 35, NDK `27.2.12479018`, CMake `3.22.1`, and Gradle `8.11.1`.
+The checked-in Gradle wrapper verifies the Gradle distribution SHA-256 before using it.
+
+### GitHub Actions
+
+Every push to `main` runs the `Android APK` workflow and uploads
+`llamacpp-gemma-release-apk`. This is the easiest reproducible Vulkan build because the workflow
+installs `glslc`, Vulkan headers, and SPIR-V headers before compiling.
+
+Release APKs use the checked-in `app/dev-signing.p12` development key so successive CI builds can
+update the same sideloaded app without deleting its private model files. The key and its public
+password are intentionally reproducible and must not be used for a Play Store or production build.
+
+### Local Android Studio
+
+1. Install Android Studio with JDK 17, SDK 35, NDK `27.2.12479018`, and CMake `3.22.1`.
+2. Install the LunarG Vulkan SDK so `glslc` and Vulkan/SPIR-V headers are available.
+3. Run the pinned dependency fetch script above.
+4. Open the repository root and build the `app` module.
+
+If the Vulkan SDK is not auto-detected, set these environment variables before starting Android
+Studio:
+
+```text
+SPIRV_HEADERS_DIR=<directory containing SPIRV-HeadersConfig.cmake>
+SPIRV_HEADERS_INCLUDE_DIR=<directory containing spirv/unified1/spirv.hpp>
+VULKAN_HEADERS_INCLUDE_DIR=<Vulkan-Headers include directory>
 ```
 
-## CPU Build
+Command-line release build:
 
-CPU is the safest first build:
-
-Use Android Studio, or run `./gradlew :app:assembleDebug` after generating the wrapper. This is useful for development, but it is not the build to use for measuring tokens/second.
-
-## Vulkan GPU Build
-
-Vulkan is already enabled in `app/build.gradle.kts`:
-
-```kotlin
-arguments += listOf(
-    "-DGGML_VULKAN=ON",
-    "-DGGML_OPENMP=OFF",
-    "-DGGML_OPENCL=OFF",
-)
+```powershell
+.\gradlew.bat :app:assembleRelease
 ```
 
-In the app choose `Vulkan GPU` and keep `GPU layers` high, for example `99`.
+The APK is written to `app/build/outputs/apk/release/app-release.apk`.
 
-## Snapdragon NPU / QNN
+## Device test sequence
 
-For NPU, do not expect a generic switch to work on every phone. You need a llama.cpp build that includes QNN/Hexagon support and the required Qualcomm runtime files for the target device.
+1. Enable Developer options and USB debugging on the S24.
+2. Connect USB and confirm `adb devices` reports `device`.
+3. Install with `adb install -r app-release.apk`.
+4. Copy/download the model to the phone, open the app, and tap `Pick GGUF`.
+5. Load with Vulkan and open `Show settings`.
+6. Confirm diagnostics show a `Vulkan` device and an upstream `offloaded ... layers` message.
+7. Run `Benchmark`, then repeat in CPU mode for comparison.
 
-This Exynos build does not expose an `Experimental QNN/NPU` backend option. Treat NPU as a separate Snapdragon-specific build flavor, not the default Android path.
+Chat responses stream token-by-token and retain per-response prompt-token count, generated-token
+count, reused prompt-token count, time to first token (TTFT), prompt-evaluation time, generation time,
+end-to-end request time, and generation tokens/sec. The benchmark also reports prompt-evaluation time
+separately; displayed tokens/sec uses generation time only.
 
-## Android Notes
+## Implementation notes and limits
 
-- Minimum SDK: 29
-- Target SDK: 35
-- ABI: `arm64-v8a`
-- UI: Jetpack Compose + Material 3
-- Architecture: simple MVVM with `StateFlow`
-- Runtime errors are shown in a popup dialog. Hard native crashes such as process-level Vulkan driver aborts or out-of-memory kills can still terminate the app before Kotlin can display an error.
-- The settings section is collapsed by default. Tap **Show settings** to change backend or GPU layers.
+- Minimum SDK 29; target/compile SDK 35; ABI `arm64-v8a`.
+- Kotlin, Jetpack Compose Material 3, MVVM/`StateFlow`, and a C++ JNI bridge.
+- Chat messages are formatted with the GGUF's embedded chat template.
+- Context overflow is checked and requested output is capped to available context space.
+- Generation streams into the active assistant message; one request runs at a time.
+- The native context stays allocated between requests and reuses the exact common KV-cache prefix.
+  Streaming callbacks are paced to roughly display refresh cadence to avoid JNI and UI work per token.
+- Release builds target Armv8.7-A, warm Vulkan/CPU graphs at model load, keep Flash Attention and
+  operation/KV offload enabled, and skip an unused final-token decode.
+- Hard native driver crashes or process-level out-of-memory kills cannot be converted into a Kotlin
+  error dialog.
+- NPU via LiteRT-LM would require a second inference engine and a non-GGUF model deployment path;
+  it is not a switch that can be enabled on this llama.cpp build.
 
-## Practical Recommendation
+## Primary references
 
-For your current goal, I would test in this order:
-
-1. Vulkan GPU with `Q4_K_M`, `gpuLayers=99`, `contextSize=2048`, and `threads=4`.
-2. If Vulkan crashes or falls back, reduce `gpuLayers` to `48`, then `32`, then `16`.
-3. If memory is still unstable, reduce context size to `1024`.
-4. CPU is the fallback path only.
-
-If your phone is Samsung Galaxy S24 India/Exynos, QNN/NPU is not the right path. Vulkan is the realistic llama.cpp acceleration path; LiteRT/MediaPipe may still use GPU better than llama.cpp for some models.
+- [llama.cpp Android documentation](https://github.com/ggml-org/llama.cpp/blob/master/docs/android.md)
+- [llama.cpp Vulkan build documentation](https://github.com/ggml-org/llama.cpp/blob/master/docs/build.md#vulkan)
+- [llama.cpp Snapdragon CPU/GPU/Hexagon backend](https://github.com/ggml-org/llama.cpp/blob/master/docs/backend/snapdragon/README.md)
+- [Android NDK Vulkan guidance](https://developer.android.com/ndk/guides/graphics/getting-started)
+- [Samsung Exynos 2400 specifications](https://semiconductor.samsung.com/processor/mobile-processor/exynos-2400/)
+- [Google Gemma 4 E2B Q4_0 GGUF](https://huggingface.co/google/gemma-4-E2B-it-qat-q4_0-gguf)
+- [Android NNAPI deprecation and migration guidance](https://developer.android.com/ndk/guides/neuralnetworks/migration-guide)
