@@ -3,6 +3,7 @@ package dev.chinmay.llamacppgemma
 import android.app.Application
 import android.net.Uri
 import android.provider.OpenableColumns
+import android.util.Log
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import java.io.File
@@ -16,6 +17,40 @@ import kotlinx.coroutines.withContext
 class ChatViewModel(application: Application) : AndroidViewModel(application) {
     private val _state = MutableStateFlow(ChatUiState())
     val state: StateFlow<ChatUiState> = _state
+    private var nextNoticeId = 0L
+
+    init {
+        viewModelScope.launch {
+            val status = runCatching {
+                withContext(Dispatchers.IO) { LlamaBridge.acceleratorDevices() }
+            }.fold(
+                onSuccess = { inventory ->
+                    "$inventory. Samsung ENN/NNAPI cannot execute GGUF through this llama.cpp build."
+                },
+                onFailure = { error -> "Accelerator probe failed: ${error.message}" },
+            )
+            Log.i(LOG_TAG, "NPU probe: $status")
+            _state.update { it.copy(npuStatus = status) }
+        }
+        viewModelScope.launch {
+            val existingModel = withContext(Dispatchers.IO) {
+                File(getApplication<Application>().filesDir, "models")
+                    .listFiles()
+                    .orEmpty()
+                    .filter { it.isFile && it.extension.equals("gguf", ignoreCase = true) }
+                    .maxByOrNull(File::lastModified)
+            }
+            existingModel?.let { model ->
+                _state.update { state ->
+                    if (state.modelPath == null) {
+                        state.copy(modelPath = model.absolutePath, modelName = model.name)
+                    } else {
+                        state
+                    }
+                }
+            }
+        }
+    }
 
     fun setInput(value: String) {
         _state.update { it.copy(input = value) }
@@ -33,6 +68,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                     threads = backend.defaultThreads,
                 ),
                 loadedBackend = null,
+                runtimeReport = "",
                 benchmark = null,
             )
         }
@@ -47,6 +83,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             it.copy(
                 settings = it.settings.copy(gpuLayers = gpuLayers),
                 loadedBackend = null,
+                runtimeReport = "",
                 benchmark = null,
             )
         }
@@ -54,6 +91,12 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
 
     fun dismissError() {
         _state.update { it.copy(error = null) }
+    }
+
+    fun dismissNotice(id: Long) {
+        _state.update { state ->
+            if (state.notice?.id == id) state.copy(notice = null) else state
+        }
     }
 
     fun selectModel(uri: Uri) {
@@ -64,6 +107,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                     isBusy = true,
                     error = null,
                     loadedBackend = null,
+                    runtimeReport = "",
                     benchmark = null,
                 )
             }
@@ -79,6 +123,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                         modelPath = model.absolutePath,
                         modelName = model.name,
                         loadedBackend = null,
+                        runtimeReport = "",
                         nativeDiagnostics = "",
                         benchmark = null,
                         messages = emptyList(),
@@ -102,24 +147,33 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             _state.update { it.copy(isBusy = true, error = null) }
             runCatching {
                 withContext(Dispatchers.IO) {
-                    LlamaBridge.loadModel(
+                    val backend = LlamaBridge.loadModel(
                         modelPath = modelPath,
                         backend = current.settings.backend.nativeName,
                         gpuLayers = current.settings.gpuLayers,
                         contextSize = current.settings.contextSize,
                         threads = current.settings.threads,
                     )
+                    LoadedModel(
+                        backend = backend,
+                        runtimeReport = LlamaBridge.runtimeReport(),
+                        diagnostics = LlamaBridge.diagnostics(),
+                    )
                 }
-            }.onSuccess { backend ->
+            }.onSuccess { loaded ->
+                val toast = backendNotice(loaded.backend, loaded.runtimeReport)
+                Log.i(LOG_TAG, "Model loaded: ${loaded.runtimeReport}")
                 _state.update {
                     it.copy(
-                        loadedBackend = backend,
-                        nativeDiagnostics = LlamaBridge.diagnostics(),
+                        loadedBackend = loaded.backend,
+                        runtimeReport = loaded.runtimeReport,
+                        nativeDiagnostics = loaded.diagnostics,
                         benchmark = null,
                         isBusy = false,
+                        notice = UiNotice(++nextNoticeId, toast),
                         messages = it.messages + ChatMessage(
                             ChatMessage.Role.System,
-                            "Loaded ${it.modelName} on $backend",
+                            "Loaded ${it.modelName} on ${loaded.backend}",
                         ),
                     )
                 }
@@ -155,6 +209,11 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             }.mapCatching { raw ->
                 parseBenchmark(raw, current.loadedBackend.orEmpty())
             }.onSuccess { result ->
+                Log.i(
+                    LOG_TAG,
+                    "Benchmark backend=${result.backend} tokens=${result.generatedTokens} " +
+                        "generationMs=${result.generationMs} tokPerSec=${result.tokensPerSecond}",
+                )
                 _state.update {
                     it.copy(
                         isBusy = false,
@@ -266,6 +325,12 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                     )
                 }
             }.mapCatching(::parseGenerationMetrics).onSuccess { metrics ->
+                Log.i(
+                    LOG_TAG,
+                    "Generation backend=${current.loadedBackend} tokens=${metrics.generatedTokens} " +
+                        "promptMs=${metrics.promptEvalMs} generationMs=${metrics.generationMs} " +
+                        "tokPerSec=${metrics.tokensPerSecond} totalMs=${metrics.totalMs}",
+                )
                 _state.update { state ->
                     val messages = state.messages.toMutableList()
                     val index = messages.lastIndex
@@ -366,11 +431,25 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         )
     }
 
+    private fun backendNotice(backend: String, runtimeReport: String): String = when {
+        runtimeReport.contains("gpu_weights_verified=true") ->
+            "Running on $backend — GPU model allocation verified"
+        backend.contains("CPU", ignoreCase = true) -> "Running on CPU"
+        else -> "Running on $backend — check runtime report for placement"
+    }
+
     private companion object {
+        const val LOG_TAG = "LlamaCppGemma"
         const val MODEL_COPY_BUFFER_BYTES = 1024 * 1024
         const val BENCHMARK_PROMPT =
             "Give a concise checklist for running a small language model locally on Android."
     }
+
+    private data class LoadedModel(
+        val backend: String,
+        val runtimeReport: String,
+        val diagnostics: String,
+    )
 
     private data class ModelMetadata(val name: String, val size: Long?)
 }

@@ -36,6 +36,11 @@ data class InferenceSettings(
     val temperature: Float = 0.7f,
 )
 
+data class UiNotice(
+    val id: Long,
+    val message: String,
+)
+
 data class BenchmarkResult(
     val backend: String,
     val buildType: String,
@@ -60,6 +65,8 @@ data class ChatUiState(
     val modelPath: String? = null,
     val modelName: String = "No model selected",
     val loadedBackend: String? = null,
+    val runtimeReport: String = "",
+    val npuStatus: String = "Checking Android accelerator devices…",
     val nativeDiagnostics: String = "",
     val benchmark: BenchmarkResult? = null,
     val settings: InferenceSettings = InferenceSettings(),
@@ -67,4 +74,5 @@ data class ChatUiState(
     val input: String = "",
     val isBusy: Boolean = false,
     val error: String? = null,
+    val notice: UiNotice? = null,
 )

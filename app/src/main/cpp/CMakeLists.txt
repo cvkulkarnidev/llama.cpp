@@ -49,6 +49,7 @@ endif()
 target_include_directories(llamacpp_jni PRIVATE
     "${LLAMA_CPP_DIR}/include"
     "${LLAMA_CPP_DIR}/ggml/include"
+    "${LLAMA_CPP_DIR}/src"
 )
 
 if(GGML_VULKAN AND VULKAN_HEADERS_INCLUDE_DIR)
@@ -63,4 +64,5 @@ target_link_libraries(llamacpp_jni
     llama
     android
     log
+    neuralnetworks
 )

@@ -1,18 +1,22 @@
 #include <jni.h>
 #include <android/log.h>
+#include <android/NeuralNetworks.h>
 
 #include <algorithm>
 #include <cctype>
 #include <chrono>
 #include <cstddef>
 #include <functional>
+#include <iomanip>
 #include <mutex>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <thread>
 #include <vector>
 
 #include "llama.h"
+#include "llama-ext.h"
 
 #define LOG_TAG "LlamaCppGemma"
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
@@ -29,6 +33,7 @@ struct Engine {
     std::mutex log_mutex;
     bool backend_initialized = false;
     std::string loaded_backend = "CPU";
+    std::string runtime_report;
     std::string diagnostics;
     int requested_gpu_layers = 0;
     int requested_context_size = 0;
@@ -160,6 +165,7 @@ ggml_backend_dev_t find_vulkan_device() {
 
 void unload_locked() {
     g_engine.cached_tokens.clear();
+    g_engine.runtime_report.clear();
     if (g_engine.sampler) {
         llama_sampler_free(g_engine.sampler);
         g_engine.sampler = nullptr;
@@ -219,6 +225,118 @@ std::string token_to_piece(const llama_vocab * vocab, llama_token token) {
     }
     if (size <= 0) return "";
     return std::string(stack_buffer, static_cast<size_t>(size));
+}
+
+bool is_gpu_device(ggml_backend_dev_t device) {
+    if (!device) return false;
+    const auto type = ggml_backend_dev_type(device);
+    return type == GGML_BACKEND_DEVICE_TYPE_GPU || type == GGML_BACKEND_DEVICE_TYPE_IGPU;
+}
+
+std::string mib_string(size_t bytes) {
+    std::ostringstream value;
+    value << std::fixed << std::setprecision(1)
+          << static_cast<double>(bytes) / (1024.0 * 1024.0);
+    return value.str();
+}
+
+std::string build_runtime_report() {
+    size_t model_gpu = 0;
+    size_t model_cpu = 0;
+    size_t context_gpu = 0;
+    size_t context_cpu = 0;
+    size_t compute_gpu = 0;
+    size_t compute_cpu = 0;
+
+    const auto memory = llama_get_memory_breakdown(g_engine.ctx);
+    for (const auto & entry : memory) {
+        const auto buft = entry.first;
+        const auto & usage = entry.second;
+        const auto device = ggml_backend_buft_get_device(buft);
+        const bool gpu = is_gpu_device(device);
+        if (gpu) {
+            model_gpu += usage.model;
+            context_gpu += usage.context;
+            compute_gpu += usage.compute;
+        } else {
+            model_cpu += usage.model;
+            context_cpu += usage.context;
+            compute_cpu += usage.compute;
+        }
+        append_diagnostic(
+            "app: allocation=" + std::string(ggml_backend_buft_name(buft)) +
+            " device=" + (device ? device_description(device) : "CPU/host") +
+            " model_mib=" + mib_string(usage.model) +
+            " context_mib=" + mib_string(usage.context) +
+            " compute_mib=" + mib_string(usage.compute) + "\n"
+        );
+    }
+
+    std::string model_devices;
+    const int device_count = llama_model_n_devices(g_engine.model);
+    for (int i = 0; i < device_count; ++i) {
+        const auto device = llama_model_get_device(g_engine.model, i);
+        if (!device) continue;
+        if (!model_devices.empty()) model_devices += ", ";
+        model_devices += device_description(device);
+    }
+    if (model_devices.empty()) model_devices = "CPU/host";
+
+    const bool gpu_weights_verified = model_gpu > 0;
+    return
+        "backend=" + g_engine.loaded_backend +
+        ";model_devices=" + model_devices +
+        ";gpu_weights_verified=" + (gpu_weights_verified ? "true" : "false") +
+        ";model_gpu_mib=" + mib_string(model_gpu) +
+        ";model_cpu_mib=" + mib_string(model_cpu) +
+        ";context_gpu_mib=" + mib_string(context_gpu) +
+        ";context_cpu_mib=" + mib_string(context_cpu) +
+        ";compute_gpu_mib=" + mib_string(compute_gpu) +
+        ";compute_cpu_mib=" + mib_string(compute_cpu) +
+        ";parameters=" + std::to_string(llama_model_n_params(g_engine.model));
+}
+
+const char * nn_device_type_name(int32_t type) {
+    switch (type) {
+        case ANEURALNETWORKS_DEVICE_ACCELERATOR: return "accelerator/NPU";
+        case ANEURALNETWORKS_DEVICE_GPU: return "GPU";
+        case ANEURALNETWORKS_DEVICE_CPU: return "CPU";
+        case ANEURALNETWORKS_DEVICE_OTHER: return "other";
+        default: return "unknown";
+    }
+}
+
+std::string accelerator_inventory() {
+    uint32_t count = 0;
+    const int count_status = ANeuralNetworks_getDeviceCount(&count);
+    if (count_status != ANEURALNETWORKS_NO_ERROR) {
+        return "NNAPI device query failed (code " + std::to_string(count_status) + ")";
+    }
+
+    std::string devices;
+    for (uint32_t i = 0; i < count; ++i) {
+        ANeuralNetworksDevice * device = nullptr;
+        if (ANeuralNetworks_getDevice(i, &device) != ANEURALNETWORKS_NO_ERROR || !device) continue;
+
+        const char * name = nullptr;
+        const char * version = nullptr;
+        int32_t type = ANEURALNETWORKS_DEVICE_UNKNOWN;
+        int64_t feature_level = 0;
+        ANeuralNetworksDevice_getName(device, &name);
+        ANeuralNetworksDevice_getVersion(device, &version);
+        ANeuralNetworksDevice_getType(device, &type);
+        ANeuralNetworksDevice_getFeatureLevel(device, &feature_level);
+        if (type == ANEURALNETWORKS_DEVICE_CPU) continue;
+
+        if (!devices.empty()) devices += " | ";
+        devices += (name && name[0] ? name : "unnamed");
+        devices += " (";
+        devices += nn_device_type_name(type);
+        devices += ", feature level " + std::to_string(feature_level);
+        if (version && version[0]) devices += ", driver " + std::string(version);
+        devices += ")";
+    }
+    return devices.empty() ? "No non-CPU NNAPI accelerator advertised" : devices;
 }
 
 std::string format_gemma4_chat_prompt(
@@ -605,7 +723,9 @@ Java_dev_chinmay_llamacppgemma_LlamaBridge_loadModel(
         ).count();
 
         g_engine.loaded_backend = selected_backend;
+        g_engine.runtime_report = build_runtime_report();
         append_diagnostic("app: model_loaded_on=" + selected_backend + "\n");
+        append_diagnostic("app: runtime_report=" + g_engine.runtime_report + "\n");
         append_diagnostic(
             "app: optimizations=persistent_context,prefix_kv_cache,batched_streaming,last_decode_elision,"
             "flash_attention_auto,op_offload,kv_offload,armv8.7a\n"
@@ -627,6 +747,7 @@ Java_dev_chinmay_llamacppgemma_LlamaBridge_loadModel(
             selected_backend.c_str(),
             g_engine.requested_gpu_layers
         );
+        LOGI("Runtime placement %s", g_engine.runtime_report.c_str());
         return string_to_jstring(env, g_engine.loaded_backend);
     } catch (const std::exception & e) {
         unload_locked();
@@ -718,6 +839,7 @@ Java_dev_chinmay_llamacppgemma_LlamaBridge_generate(
             ";generation_ms=" + std::to_string(result.generation_ms) +
             ";time_to_first_token_ms=" + std::to_string(result.time_to_first_token_ms) +
             ";total_ms=" + std::to_string(result.total_ms);
+        LOGI("Generation backend=%s %s", g_engine.loaded_backend.c_str(), metrics.c_str());
         return string_to_jstring(env, metrics);
     } catch (const std::exception & e) {
         LOGE("%s", e.what());
@@ -779,6 +901,25 @@ Java_dev_chinmay_llamacppgemma_LlamaBridge_benchmark(
 extern "C" JNIEXPORT jstring JNICALL
 Java_dev_chinmay_llamacppgemma_LlamaBridge_diagnostics(JNIEnv * env, jobject) {
     return string_to_jstring(env, diagnostics_snapshot());
+}
+
+extern "C" JNIEXPORT jstring JNICALL
+Java_dev_chinmay_llamacppgemma_LlamaBridge_runtimeReport(JNIEnv * env, jobject) {
+    std::lock_guard<std::mutex> lock(g_engine.mutex);
+    return string_to_jstring(env, g_engine.runtime_report);
+}
+
+extern "C" JNIEXPORT jstring JNICALL
+Java_dev_chinmay_llamacppgemma_LlamaBridge_acceleratorDevices(JNIEnv * env, jobject) {
+    try {
+        const std::string inventory = accelerator_inventory();
+        LOGI("Android accelerator inventory: %s", inventory.c_str());
+        return string_to_jstring(env, inventory);
+    } catch (const std::exception & e) {
+        LOGE("Accelerator inventory failed: %s", e.what());
+        throw_java(env, e.what());
+        return nullptr;
+    }
 }
 
 extern "C" JNIEXPORT void JNICALL

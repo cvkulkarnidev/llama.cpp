@@ -1,6 +1,8 @@
 package dev.chinmay.llamacppgemma
 
+import android.net.Uri
 import android.os.Bundle
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
@@ -18,7 +20,9 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
@@ -39,10 +43,12 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 
@@ -65,6 +71,7 @@ class MainActivity : ComponentActivity() {
                         onGpuLayers = viewModel::setGpuLayers,
                         onBenchmark = viewModel::benchmark,
                         onDismissError = viewModel::dismissError,
+                        onDismissNotice = viewModel::dismissNotice,
                     ),
                 )
             }
@@ -73,7 +80,7 @@ class MainActivity : ComponentActivity() {
 }
 
 data class ChatActions(
-    val onModelSelected: (android.net.Uri) -> Unit,
+    val onModelSelected: (Uri) -> Unit,
     val onLoad: () -> Unit,
     val onSend: () -> Unit,
     val onInput: (String) -> Unit,
@@ -81,19 +88,22 @@ data class ChatActions(
     val onGpuLayers: (Int) -> Unit,
     val onBenchmark: () -> Unit,
     val onDismissError: () -> Unit,
+    val onDismissNotice: (Long) -> Unit,
 )
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ChatScreen(state: ChatUiState, actions: ChatActions) {
-    val messageListState = rememberLazyListState()
+    val context = LocalContext.current
+    var showSettings by rememberSaveable { mutableStateOf(false) }
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         uri?.let(actions.onModelSelected)
     }
 
-    LaunchedEffect(state.messages.size, state.messages.lastOrNull()?.text?.length) {
-        if (state.messages.isNotEmpty()) {
-            messageListState.scrollToItem(state.messages.lastIndex)
+    LaunchedEffect(state.notice?.id) {
+        state.notice?.let { notice ->
+            Toast.makeText(context, notice.message, Toast.LENGTH_LONG).show()
+            actions.onDismissNotice(notice.id)
         }
     }
 
@@ -103,63 +113,115 @@ fun ChatScreen(state: ChatUiState, actions: ChatActions) {
             title = { Text("Runtime error") },
             text = { Text(error) },
             confirmButton = {
-                TextButton(onClick = actions.onDismissError) {
-                    Text("OK")
-                }
+                TextButton(onClick = actions.onDismissError) { Text("OK") }
             },
         )
     }
 
     Scaffold(
         topBar = {
-            TopAppBar(title = { Text("Gemma 4 E2B llama.cpp") })
+            TopAppBar(
+                title = { Text(if (showSettings) "Settings" else "Gemma llama.cpp") },
+                actions = {
+                    TextButton(onClick = { showSettings = !showSettings }) {
+                        Text(if (showSettings) "Done" else "Settings")
+                    }
+                },
+            )
         },
     ) { padding ->
-        Column(
-            modifier = Modifier
-                .padding(padding)
-                .fillMaxSize()
-                .background(Color(0xFFFAFAFA))
-                .padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp),
-        ) {
-            ModelPanel(
+        if (showSettings) {
+            SettingsScreen(
                 state = state,
-                onPick = { picker.launch(arrayOf("*/*")) },
-                onLoad = actions.onLoad,
-                onBackend = actions.onBackend,
-                onGpuLayers = actions.onGpuLayers,
-                onBenchmark = actions.onBenchmark,
+                actions = actions,
+                onPick = { picker.launch(arrayOf("application/octet-stream", "*/*")) },
+                modifier = Modifier.padding(padding),
             )
+        } else {
+            ChatContent(
+                state = state,
+                actions = actions,
+                modifier = Modifier.padding(padding),
+            )
+        }
+    }
+}
 
-            LazyColumn(
-                state = messageListState,
-                modifier = Modifier
-                    .weight(1f)
-                    .fillMaxWidth(),
-                verticalArrangement = Arrangement.spacedBy(8.dp),
+@Composable
+private fun ChatContent(
+    state: ChatUiState,
+    actions: ChatActions,
+    modifier: Modifier = Modifier,
+) {
+    val messageListState = rememberLazyListState()
+    LaunchedEffect(state.messages.size, state.messages.lastOrNull()?.text?.length) {
+        if (state.messages.isNotEmpty()) messageListState.scrollToItem(state.messages.lastIndex)
+    }
+
+    Column(
+        modifier = modifier
+            .fillMaxSize()
+            .background(Color(0xFFFAFAFA))
+            .padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        RuntimeStatusCard(state)
+
+        LazyColumn(
+            state = messageListState,
+            modifier = Modifier
+                .weight(1f)
+                .fillMaxWidth(),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            items(state.messages) { message -> MessageBubble(message) }
+        }
+
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            OutlinedTextField(
+                value = state.input,
+                onValueChange = actions.onInput,
+                modifier = Modifier.weight(1f),
+                enabled = !state.isBusy,
+                minLines = 1,
+                maxLines = 4,
+                placeholder = { Text("Ask locally…") },
+            )
+            Button(
+                enabled = !state.isBusy,
+                onClick = actions.onSend,
+                modifier = Modifier.align(Alignment.CenterVertically),
             ) {
-                items(state.messages) { message ->
-                    MessageBubble(message)
-                }
+                Text(if (state.isBusy) "Wait" else "Send")
             }
+        }
+    }
+}
 
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedTextField(
-                    value = state.input,
-                    onValueChange = actions.onInput,
-                    modifier = Modifier.weight(1f),
-                    minLines = 1,
-                    maxLines = 4,
-                    placeholder = { Text("Ask locally...") },
+@Composable
+private fun RuntimeStatusCard(state: ChatUiState) {
+    Card(shape = RoundedCornerShape(8.dp), modifier = Modifier.fillMaxWidth()) {
+        Column(
+            modifier = Modifier.padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            Text(state.modelName, style = MaterialTheme.typography.titleSmall)
+            Text(
+                state.loadedBackend?.let { "Running on $it" }
+                    ?: "Model not loaded — open Settings",
+                style = MaterialTheme.typography.bodySmall,
+                color = if (state.loadedBackend != null) {
+                    MaterialTheme.colorScheme.primary
+                } else {
+                    MaterialTheme.colorScheme.onSurfaceVariant
+                },
+            )
+            state.benchmark?.let { result ->
+                Text(
+                    "${"%.2f".format(result.tokensPerSecond)} tok/s • " +
+                        "${result.generatedTokens} tokens/${result.generationMs} ms",
+                    style = MaterialTheme.typography.labelSmall,
                 )
-                Button(
-                    enabled = !state.isBusy,
-                    onClick = actions.onSend,
-                    modifier = Modifier.align(Alignment.CenterVertically),
-                ) {
-                    Text(if (state.isBusy) "Wait" else "Send")
-                }
             }
         }
     }
@@ -167,89 +229,48 @@ fun ChatScreen(state: ChatUiState, actions: ChatActions) {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun ModelPanel(
+private fun SettingsScreen(
     state: ChatUiState,
+    actions: ChatActions,
     onPick: () -> Unit,
-    onLoad: () -> Unit,
-    onBackend: (LlamaBackend) -> Unit,
-    onGpuLayers: (Int) -> Unit,
-    onBenchmark: () -> Unit,
+    modifier: Modifier = Modifier,
 ) {
-    var expanded by remember { mutableStateOf(false) }
-    var showSettings by remember { mutableStateOf(false) }
-
-    Card(shape = RoundedCornerShape(8.dp)) {
-        Column(
-            modifier = Modifier.padding(10.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(6.dp),
-                verticalAlignment = Alignment.CenterVertically,
+    var backendMenuExpanded by remember { mutableStateOf(false) }
+    Column(
+        modifier = modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState())
+            .padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        Card(modifier = Modifier.fillMaxWidth()) {
+            Column(
+                modifier = Modifier.padding(12.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(state.modelName, style = MaterialTheme.typography.titleSmall)
-                    Text(
-                        state.loadedBackend?.let { "Running on $it" } ?: "Model not loaded",
-                        style = MaterialTheme.typography.bodySmall,
-                    )
+                Text("Model", style = MaterialTheme.typography.titleMedium)
+                Text(state.modelName, style = MaterialTheme.typography.bodyMedium)
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    TextButton(enabled = !state.isBusy, onClick = onPick) { Text("Pick GGUF") }
+                    Button(
+                        enabled = !state.isBusy && state.modelPath != null,
+                        onClick = actions.onLoad,
+                    ) {
+                        Text(if (state.isBusy) "Loading…" else "Load model")
+                    }
                 }
-                TextButton(enabled = !state.isBusy, onClick = onPick) { Text("Pick GGUF") }
-                Button(enabled = !state.isBusy, onClick = onLoad) { Text("Load") }
             }
+        }
 
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically,
+        Card(modifier = Modifier.fillMaxWidth()) {
+            Column(
+                modifier = Modifier.padding(12.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                Column(modifier = Modifier.weight(1f)) {
-                    state.benchmark?.let { result ->
-                        Text(
-                            "Benchmark: ${"%.2f".format(result.tokensPerSecond)} tok/s",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.primary,
-                        )
-                        Text(
-                            "${result.generatedTokens} tokens in ${result.generationMs} ms, ${result.buildType}",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                        Text(
-                            "prompt=${result.promptTokens} tokens/${result.promptEvalMs} ms; " +
-                                "cached=${result.cachedPromptTokens}; gpuLayers=${result.gpuLayersRequested}, " +
-                                "ctx=${result.contextSize}, threads=${result.threads}",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                        Text(
-                            result.backend,
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    } ?: Text(
-                        "S24 Exynos: use Vulkan first; CPU is safe fallback.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-                TextButton(
-                    enabled = !state.isBusy && state.loadedBackend != null,
-                    onClick = onBenchmark,
-                ) {
-                    Text("Benchmark")
-                }
-            }
-
-            TextButton(onClick = { showSettings = !showSettings }) {
-                Text(if (showSettings) "Hide settings" else "Show settings")
-            }
-
-            if (showSettings) {
+                Text("Execution", style = MaterialTheme.typography.titleMedium)
                 ExposedDropdownMenuBox(
-                    expanded = expanded,
-                    onExpandedChange = { if (!state.isBusy) expanded = it },
+                    expanded = backendMenuExpanded,
+                    onExpandedChange = { if (!state.isBusy) backendMenuExpanded = it },
                 ) {
                     OutlinedTextField(
                         value = state.settings.backend.label,
@@ -257,18 +278,23 @@ private fun ModelPanel(
                         enabled = !state.isBusy,
                         readOnly = true,
                         label = { Text("Backend") },
-                        trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded) },
+                        trailingIcon = {
+                            ExposedDropdownMenuDefaults.TrailingIcon(expanded = backendMenuExpanded)
+                        },
                         modifier = Modifier
                             .menuAnchor()
                             .fillMaxWidth(),
                     )
-                    ExposedDropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+                    ExposedDropdownMenu(
+                        expanded = backendMenuExpanded,
+                        onDismissRequest = { backendMenuExpanded = false },
+                    ) {
                         LlamaBackend.entries.forEach { backend ->
                             DropdownMenuItem(
                                 text = { Text(backend.label) },
                                 onClick = {
-                                    expanded = false
-                                    onBackend(backend)
+                                    backendMenuExpanded = false
+                                    actions.onBackend(backend)
                                 },
                             )
                         }
@@ -278,24 +304,112 @@ private fun ModelPanel(
                 Text("GPU layers: ${state.settings.gpuLayers}")
                 Slider(
                     value = state.settings.gpuLayers.toFloat(),
-                    onValueChange = { onGpuLayers(it.toInt()) },
+                    onValueChange = { actions.onGpuLayers(it.toInt()) },
                     enabled = !state.isBusy && state.settings.backend == LlamaBackend.Vulkan,
                     valueRange = if (state.settings.backend == LlamaBackend.Vulkan) 1f..99f else 0f..99f,
                     steps = if (state.settings.backend == LlamaBackend.Vulkan) 97 else 98,
                 )
 
-                if (state.nativeDiagnostics.isNotBlank()) {
-                    Text("Native diagnostics", style = MaterialTheme.typography.titleSmall)
+                Text(
+                    state.loadedBackend?.let { "Active: $it" } ?: "Load the model to verify placement",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+                if (state.runtimeReport.isNotBlank()) {
+                    RuntimePlacementReport(state.runtimeReport)
+                }
+                Button(
+                    enabled = !state.isBusy && state.loadedBackend != null,
+                    onClick = actions.onBenchmark,
+                ) {
+                    Text("Run 64-token benchmark")
+                }
+                state.benchmark?.let { BenchmarkDetails(it) }
+            }
+        }
+
+        Card(modifier = Modifier.fillMaxWidth()) {
+            Column(
+                modifier = Modifier.padding(12.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                Text("NPU probe", style = MaterialTheme.typography.titleMedium)
+                Text(state.npuStatus, style = MaterialTheme.typography.bodySmall)
+                Text(
+                    "An NPU driver being present does not mean a GGUF model ran there. " +
+                        "Only verified model allocation is reported as active.",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+
+        if (state.nativeDiagnostics.isNotBlank()) {
+            Card(modifier = Modifier.fillMaxWidth()) {
+                Column(
+                    modifier = Modifier.padding(12.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    Text("Native diagnostics", style = MaterialTheme.typography.titleMedium)
                     Text(
-                        state.nativeDiagnostics.trim().takeLast(1600),
+                        state.nativeDiagnostics.trim().takeLast(3000),
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
             }
         }
+        Spacer(Modifier.height(24.dp))
     }
 }
+
+@Composable
+private fun RuntimePlacementReport(report: String) {
+    val fields = remember(report) { parseReport(report) }
+    val verified = fields["gpu_weights_verified"] == "true"
+    Text(
+        if (verified) "GPU allocation verified" else "CPU/host allocation",
+        style = MaterialTheme.typography.titleSmall,
+        color = if (verified) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
+    )
+    Text(
+        "Model devices: ${fields["model_devices"].orEmpty()}\n" +
+            "Model memory: GPU ${fields["model_gpu_mib"] ?: "0"} MiB, " +
+            "CPU ${fields["model_cpu_mib"] ?: "0"} MiB\n" +
+            "Context: GPU ${fields["context_gpu_mib"] ?: "0"} MiB, " +
+            "CPU ${fields["context_cpu_mib"] ?: "0"} MiB\n" +
+            "Compute: GPU ${fields["compute_gpu_mib"] ?: "0"} MiB, " +
+            "CPU ${fields["compute_cpu_mib"] ?: "0"} MiB",
+        style = MaterialTheme.typography.labelSmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
+}
+
+@Composable
+private fun BenchmarkDetails(result: BenchmarkResult) {
+    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+        Text(
+            "${"%.2f".format(result.tokensPerSecond)} tok/s",
+            style = MaterialTheme.typography.titleSmall,
+            color = MaterialTheme.colorScheme.primary,
+        )
+        Text(
+            "${result.generatedTokens} tokens/${result.generationMs} ms; " +
+                "prompt ${result.promptTokens}/${result.promptEvalMs} ms; " +
+                "GPU layers ${result.gpuLayersRequested}; ctx ${result.contextSize}; " +
+                "threads ${result.threads}; ${result.buildType}",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+}
+
+private fun parseReport(report: String): Map<String, String> = report
+    .split(';')
+    .mapNotNull { part ->
+        val pieces = part.split('=', limit = 2)
+        if (pieces.size == 2) pieces[0] to pieces[1] else null
+    }
+    .toMap()
 
 @Composable
 private fun MessageBubble(message: ChatMessage) {

@@ -29,6 +29,10 @@ object LlamaBridge {
 
     external fun diagnostics(): String
 
+    external fun runtimeReport(): String
+
+    external fun acceleratorDevices(): String
+
     external fun unload()
 }
 
