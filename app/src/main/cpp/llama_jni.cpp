@@ -440,7 +440,7 @@ Java_dev_chinmay_llamacppgemma_LlamaBridge_benchmark(
         const llama_vocab * vocab = llama_model_get_vocab(g_engine.model);
         std::vector<llama_token> tokens = tokenize(vocab, jstring_to_string(env, prompt));
 
-        const std::vector<llama_token> warmup_tokens = tokenize(
+        std::vector<llama_token> warmup_tokens = tokenize(
             vocab,
             "<start_of_turn>user\nWarm up the local model briefly.\n<end_of_turn>\n<start_of_turn>model\n"
         );
