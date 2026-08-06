@@ -181,8 +181,9 @@ private fun ModelPanel(
                 Column(modifier = Modifier.weight(1f)) {
                     Text(state.modelName, style = MaterialTheme.typography.titleSmall)
                     Text(
-                        state.loadedBackend?.let { "Running on $it" } ?: "Model not loaded",
+                        runtimeStatusText(state.loadedBackend),
                         style = MaterialTheme.typography.bodySmall,
+                        color = runtimeStatusColor(state.loadedBackend),
                     )
                 }
                 TextButton(onClick = onPick) { Text("Pick GGUF") }
@@ -197,12 +198,26 @@ private fun ModelPanel(
                 Column(modifier = Modifier.weight(1f)) {
                     state.benchmark?.let { result ->
                         Text(
-                            "Benchmark: ${"%.2f".format(result.tokensPerSecond)} tok/s",
+                            if (result.gpuOffloadDetected) "ON GPU" else "NOT ON GPU",
                             style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.primary,
+                            color = if (result.gpuOffloadDetected) {
+                                MaterialTheme.colorScheme.primary
+                            } else {
+                                MaterialTheme.colorScheme.error
+                            },
                         )
                         Text(
-                            "${result.generatedTokens} tokens, ${result.elapsedMs} ms, ${result.buildType}, ${result.backend}",
+                            "Decode: ${"%.2f".format(result.decodeTokensPerSecond)} tok/s, total: ${"%.2f".format(result.tokensPerSecond)} tok/s",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        Text(
+                            "Prompt: ${result.promptTokens} tokens in ${result.promptElapsedMs} ms (${"%.2f".format(result.promptTokensPerSecond)} tok/s)",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        Text(
+                            "${result.generatedTokens} generated tokens in ${result.generationElapsedMs} ms, ${result.buildType}, ${result.backend}",
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
@@ -288,6 +303,24 @@ private fun ModelPanel(
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun runtimeStatusText(loadedBackend: String?): String {
+    return when {
+        loadedBackend == null -> "Model not loaded"
+        loadedBackend.contains("Vulkan GPU active", ignoreCase = true) -> "ON GPU - $loadedBackend"
+        else -> "NOT ON GPU - $loadedBackend"
+    }
+}
+
+@Composable
+private fun runtimeStatusColor(loadedBackend: String?): Color {
+    return when {
+        loadedBackend == null -> MaterialTheme.colorScheme.onSurfaceVariant
+        loadedBackend.contains("Vulkan GPU active", ignoreCase = true) -> MaterialTheme.colorScheme.primary
+        else -> MaterialTheme.colorScheme.error
     }
 }
 

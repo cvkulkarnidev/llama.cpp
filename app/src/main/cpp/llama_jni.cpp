@@ -287,6 +287,9 @@ Java_dev_chinmay_llamacppgemma_LlamaBridge_loadModel(
         g_engine.ctx_params.n_ctx = static_cast<uint32_t>(g_engine.requested_context_size);
         g_engine.ctx_params.n_threads = g_engine.requested_threads;
         g_engine.ctx_params.n_threads_batch = g_engine.requested_threads;
+        g_engine.ctx_params.offload_kqv = wants_vulkan;
+        g_engine.ctx_params.op_offload = wants_vulkan;
+        g_engine.ctx_params.no_perf = false;
 
         g_engine.model = llama_model_load_from_file(path.c_str(), model_params);
         if (!g_engine.model) {
@@ -299,6 +302,7 @@ Java_dev_chinmay_llamacppgemma_LlamaBridge_loadModel(
         }
 
         llama_sampler_chain_params sampler_params = llama_sampler_chain_default_params();
+        sampler_params.no_perf = false;
         g_engine.sampler = llama_sampler_chain_init(sampler_params);
         llama_sampler_chain_add(g_engine.sampler, llama_sampler_init_temp(0.7f));
         llama_sampler_chain_add(g_engine.sampler, llama_sampler_init_dist(LLAMA_DEFAULT_SEED));
@@ -364,6 +368,7 @@ Java_dev_chinmay_llamacppgemma_LlamaBridge_generate(
             llama_sampler_free(g_engine.sampler);
         }
         llama_sampler_chain_params sampler_params = llama_sampler_chain_default_params();
+        sampler_params.no_perf = false;
         g_engine.sampler = llama_sampler_chain_init(sampler_params);
         llama_sampler_chain_add(g_engine.sampler, llama_sampler_init_temp(std::max(0.0f, static_cast<float>(temperature))));
         llama_sampler_chain_add(g_engine.sampler, llama_sampler_init_dist(LLAMA_DEFAULT_SEED));
@@ -427,6 +432,7 @@ Java_dev_chinmay_llamacppgemma_LlamaBridge_benchmark(
             llama_sampler_free(g_engine.sampler);
         }
         llama_sampler_chain_params sampler_params = llama_sampler_chain_default_params();
+        sampler_params.no_perf = false;
         g_engine.sampler = llama_sampler_chain_init(sampler_params);
         llama_sampler_chain_add(g_engine.sampler, llama_sampler_init_temp(std::max(0.0f, static_cast<float>(temperature))));
         llama_sampler_chain_add(g_engine.sampler, llama_sampler_init_dist(LLAMA_DEFAULT_SEED));
@@ -434,12 +440,52 @@ Java_dev_chinmay_llamacppgemma_LlamaBridge_benchmark(
         const llama_vocab * vocab = llama_model_get_vocab(g_engine.model);
         std::vector<llama_token> tokens = tokenize(vocab, jstring_to_string(env, prompt));
 
+        const std::vector<llama_token> warmup_tokens = tokenize(
+            vocab,
+            "<start_of_turn>user\nWarm up the local model briefly.\n<end_of_turn>\n<start_of_turn>model\n"
+        );
+        llama_batch warmup_batch = llama_batch_get_one(warmup_tokens.data(), static_cast<int32_t>(warmup_tokens.size()));
+        if (llama_decode(g_engine.ctx, warmup_batch) != 0) {
+            throw std::runtime_error("Benchmark warmup decode failed");
+        }
+
+        for (int i = 0; i < 4; ++i) {
+            llama_token next = llama_sampler_sample(g_engine.sampler, g_engine.ctx, -1);
+            if (llama_vocab_is_eog(vocab, next)) {
+                break;
+            }
+
+            llama_sampler_accept(g_engine.sampler, next);
+            llama_batch next_batch = llama_batch_get_one(&next, 1);
+            if (llama_decode(g_engine.ctx, next_batch) != 0) {
+                break;
+            }
+        }
+
+        llama_free(g_engine.ctx);
+        g_engine.ctx = llama_init_from_model(g_engine.model, g_engine.ctx_params);
+        if (!g_engine.ctx) {
+            throw std::runtime_error("Failed to reset llama context after benchmark warmup");
+        }
+
+        if (g_engine.sampler) {
+            llama_sampler_free(g_engine.sampler);
+        }
+        sampler_params = llama_sampler_chain_default_params();
+        sampler_params.no_perf = false;
+        g_engine.sampler = llama_sampler_chain_init(sampler_params);
+        llama_sampler_chain_add(g_engine.sampler, llama_sampler_init_temp(std::max(0.0f, static_cast<float>(temperature))));
+        llama_sampler_chain_add(g_engine.sampler, llama_sampler_init_dist(LLAMA_DEFAULT_SEED));
+        llama_perf_context_reset(g_engine.ctx);
+        llama_perf_sampler_reset(g_engine.sampler);
+
         auto started = std::chrono::steady_clock::now();
 
         llama_batch batch = llama_batch_get_one(tokens.data(), static_cast<int32_t>(tokens.size()));
         if (llama_decode(g_engine.ctx, batch) != 0) {
             throw std::runtime_error("Benchmark prompt decode failed");
         }
+        auto prompt_finished = std::chrono::steady_clock::now();
 
         int generated = 0;
         const int limit = std::max(1, static_cast<int>(max_tokens));
@@ -461,7 +507,16 @@ Java_dev_chinmay_llamacppgemma_LlamaBridge_benchmark(
 
         auto finished = std::chrono::steady_clock::now();
         const auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(finished - started).count();
+        const auto prompt_elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(prompt_finished - started).count();
+        const auto generation_elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(finished - prompt_finished).count();
         const long long safe_elapsed_ms = std::max<long long>(1, static_cast<long long>(elapsed_ms));
+        const long long safe_prompt_elapsed_ms = std::max<long long>(1, static_cast<long long>(prompt_elapsed_ms));
+        const long long safe_generation_elapsed_ms = std::max<long long>(1, static_cast<long long>(generation_elapsed_ms));
+        const auto perf = llama_perf_context(g_engine.ctx);
+        append_diagnostic("app: benchmark_prompt_ms=" + std::to_string(safe_prompt_elapsed_ms) +
+            " benchmark_decode_ms=" + std::to_string(safe_generation_elapsed_ms) +
+            " llama_perf_prompt_ms=" + std::to_string(perf.t_p_eval_ms) +
+            " llama_perf_eval_ms=" + std::to_string(perf.t_eval_ms) + "\n");
         const std::string result =
             "backend=" + g_engine.loaded_backend +
             ";build_type=" LLAMACPP_GEMMA_BUILD_TYPE +
@@ -474,6 +529,8 @@ Java_dev_chinmay_llamacppgemma_LlamaBridge_benchmark(
             ";offloaded_layers=" + std::to_string(g_engine.offloaded_layers) +
             ";prompt_tokens=" + std::to_string(tokens.size()) +
             ";generated_tokens=" + std::to_string(generated) +
+            ";prompt_elapsed_ms=" + std::to_string(safe_prompt_elapsed_ms) +
+            ";generation_elapsed_ms=" + std::to_string(safe_generation_elapsed_ms) +
             ";elapsed_ms=" + std::to_string(safe_elapsed_ms);
 
         LOGI("Benchmark %s", result.c_str());

@@ -138,7 +138,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                         nativeDiagnostics = LlamaBridge.diagnostics(),
                         messages = it.messages + ChatMessage(
                             ChatMessage.Role.System,
-                            "Benchmark: ${"%.2f".format(result.tokensPerSecond)} tok/s, offload=${if (result.gpuOffloadDetected) "yes" else "no"} (${result.buildType}, ${result.generatedTokens} tokens in ${result.elapsedMs} ms)",
+                            "Benchmark: ${result.gpuStatusLabel}, decode=${"%.2f".format(result.decodeTokensPerSecond)} tok/s, total=${"%.2f".format(result.tokensPerSecond)} tok/s (${result.generatedTokens} tokens)",
                         ),
                     )
                 }
@@ -262,6 +262,8 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             offloadedLayers = values["offloaded_layers"]?.toIntOrNull() ?: 0,
             promptTokens = values["prompt_tokens"]?.toIntOrNull() ?: 0,
             generatedTokens = values["generated_tokens"]?.toIntOrNull() ?: 0,
+            promptElapsedMs = values["prompt_elapsed_ms"]?.toLongOrNull() ?: 0L,
+            generationElapsedMs = values["generation_elapsed_ms"]?.toLongOrNull() ?: 0L,
             elapsedMs = values["elapsed_ms"]?.toLongOrNull() ?: 0L,
         )
     }
@@ -275,3 +277,6 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         """
     }
 }
+
+private val BenchmarkResult.gpuStatusLabel: String
+    get() = if (gpuOffloadDetected) "ON GPU" else "NOT ON GPU"

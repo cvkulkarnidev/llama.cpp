@@ -30,10 +30,18 @@ data class BenchmarkResult(
     val offloadedLayers: Int,
     val promptTokens: Int,
     val generatedTokens: Int,
+    val promptElapsedMs: Long,
+    val generationElapsedMs: Long,
     val elapsedMs: Long,
 ) {
     val tokensPerSecond: Double
         get() = if (elapsedMs <= 0L) 0.0 else generatedTokens * 1000.0 / elapsedMs.toDouble()
+
+    val decodeTokensPerSecond: Double
+        get() = if (generationElapsedMs <= 0L) 0.0 else generatedTokens * 1000.0 / generationElapsedMs.toDouble()
+
+    val promptTokensPerSecond: Double
+        get() = if (promptElapsedMs <= 0L) 0.0 else promptTokens * 1000.0 / promptElapsedMs.toDouble()
 }
 
 data class ChatUiState(

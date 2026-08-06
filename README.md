@@ -38,7 +38,7 @@ Recommended first test on S24 Exynos:
 - Threads: `4`
 - Increase quality or context later if the phone stays stable.
 
-The app includes a **Benchmark** button after the model is loaded. It runs a fixed 64-token native benchmark and reports generated tokens per second, generated token count, elapsed time, backend label, registered GPU/IGPU devices, and whether llama.cpp reported GPU layer offload.
+The app includes a **Benchmark** button after the model is loaded. It runs a warmup pass, then reports prompt speed, decode speed, total speed, generated token count, backend label, registered GPU/IGPU devices, and whether llama.cpp reported GPU layer offload.
 
 For speed testing, use the **release APK** from GitHub Actions. The release build compiles native llama.cpp with `CMAKE_BUILD_TYPE=Release`; the earlier debug APK used `Debug`, which can be much slower. The release variant is signed with the debug signing key so it can be installed directly for local testing.
 
@@ -52,6 +52,8 @@ Tap **Show settings** after loading a model to see native diagnostics. The diagn
 - llama.cpp native logs, including Vulkan/offload messages when llama.cpp emits them
 
 If you choose `Vulkan GPU` with GPU layers above `0`, the app now blocks silent CPU fallback. It will show a runtime popup when no GPU/IGPU backend device is registered, or when llama.cpp loads the model without reporting GPU layer offload.
+
+If the benchmark says **NOT ON GPU**, the model is not using GPU layer offload. If it says **ON GPU** but CPU is still faster, that can happen on mobile Vulkan for batch-1 token decoding: GPU offload may help prompt/prefill more than one-token-at-a-time generation, while CPU NEON can be faster for short decode loops on Exynos.
 
 ## Prepare llama.cpp
 
